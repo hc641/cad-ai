@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAD 图纸 OCR 识别</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'Noto Sans SC', 'system-ui', 'sans-serif'] },
+                    colors: {
+                        primary: { 50: '#f0f4ff', 100: '#e0e7ff', 500: '#4f46e5', 600: '#4338ca', 700: '#3730a3' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', 'Noto Sans SC', sans-serif; background: #f1f5f9; }
+
+        /* ── 玻璃导航 ── */
+        .glass { background: rgba(255,255,255,0.85); backdrop-filter: blur(16px); border-bottom: 1px solid rgba(226,232,240,0.7); }
+
+        /* ── 模式切换 tab ── */
+        .mode-tab { transition: all .2s; }
+        .mode-tab.active { background: #4338ca; color: #fff; box-shadow: 0 4px 14px -2px rgba(67,56,202,.35); }
+        .mode-tab:not(.active) { color: #64748b; }
+        .mode-tab:not(.active):hover { background: #f1f5f9; color: #1e293b; }
+
+        /* ── 上传区 ── */
+        .upload-zone {
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='12' ry='12' stroke='%23CBD5E1' stroke-width='1.5' stroke-dasharray='8%2c8' stroke-linecap='square'/%3e%3c/svg%3e");
+            transition: all .25s ease;
+        }
+        .upload-zone.drag-over {
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='12' ry='12' stroke='%234338CA' stroke-width='2' stroke-dasharray='8%2c8' stroke-linecap='square'/%3e%3c/svg%3e");
+            background-color: #eef2ff;
+        }
+        .upload-zone.filled { background-image: none; border: 1.5px solid #e2e8f0; background-color: #fff; }
+
+        /* ── 按钮 ── */
+        .btn-primary { background: linear-gradient(135deg,#4f46e5,#4338ca); transition: all .2s; }
+        .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 24px -4px rgba(79,70,229,.35); }
+        .btn-primary:active:not(:disabled) { transform: none; }
+        .btn-outline { border: 1.5px solid #e2e8f0; transition: all .2s; }
+        .btn-outline:hover { border-color: #4338ca; color: #4338ca; }
+
+        /* ── 进도条 ── */
+        .progress-track { background:#e2e8f0; border-radius:999px; overflow:hidden; }
+        .progress-fill { transition: width .5s cubic-bezier(.4,0,.2,1); }
+
+        /* ── diff 高亮 ── */
+        .diff-add { background: #dcfce7; color: #15803d; border-radius: 2px; padding: 0 1px; }
+        .diff-del { background: #fee2e2; color: #b91c1c; border-radius: 2px; padding: 0 1px; text-decoration: line-through; }
+
+        /* ── 结果行 ── */
+        .diff-row { transition: background .12s; }
+        .diff-row:hover { filter: brightness(.97); }
+
+        /* ── 分组折叠 ── */
+        .group-header { cursor: pointer; user-select: none; }
+        .group-header:hover { background: #f1f5f9; }
+        .group-body.collapsed { display: none; }
+
+        /* ── Toast ── */
+        #toast-container { position: fixed; top: 72px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+        .toast { pointer-events: all; transform: translateX(120%); opacity: 0; transition: all .3s cubic-bezier(.34,1.56,.64,1); min-width: 260px; max-width: 380px; }
+        .toast.show { transform: translateX(0); opacity: 1; }
+        .toast.hide { transform: translateX(120%); opacity: 0; }
+
+        /* ── 动画 ── */
+        .fade-in { animation: fadeIn .4s ease-out; }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:none } }
+
+        /* ── 统计卡 ── */
+        .stat-card { transition: transform .2s; }
+        .stat-card:hover { transform: translateY(-2px); }
+
+        /* ── 单识别结果 ── */
+        .result-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    </style>
+</head>
+<body class="text-slate-700 antialiased min-h-screen">
+
+<!-- ══ 导航 ══ -->
+<nav class="glass sticky top-0 z-50">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center text-white">
+                <i class="fa-solid fa-layer-group text-sm"></i>
+            </div>
+            <span class="font-semibold text-slate-800 tracking-tight">CAD 图纸 OCR 识别</span>
+        </div>
+        <div class="flex items-center gap-1">
+            <a href="#" class="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors">历史记录</a>
+        </div>
+    </div>
+</nav>
+
+<!-- ══ Toast 容器 ══ -->
+<div id="toast-container"></div>
+
+<!-- ══ 主内容 ══ -->
+<main class="max-w-6xl mx-auto px-6 py-10">
+
+    <!-- 标题 -->
+    <div class="text-center mb-10">
+        <h1 class="text-3xl font-bold text-slate-900 tracking-tight mb-2">图纸智能识别</h1>
+        <p class="text-slate-500 text-sm max-w-lg mx-auto">上传 CAD 工程图纸，AI 自动提取尺寸、公差、BOM 等结构化数据；支持双图纸版本比对。</p>
+    </div>
+
+    <!-- 模式切换 -->
+    <div class="flex justify-center mb-10">
+        <div class="inline-flex bg-white rounded-xl p-1 shadow-sm border border-slate-100">
+            <button class="mode-tab active px-6 py-2.5 rounded-lg text-sm font-medium" onclick="switchMode('single')">
+                <i class="fa-solid fa-file-circle-check mr-2 text-xs"></i>单图识别
+            </button>
+            <button class="mode-tab px-6 py-2.5 rounded-lg text-sm font-medium" onclick="switchMode('compare')">
+                <i class="fa-solid fa-code-compare mr-2 text-xs"></i>版本比对
+            </button>
+        </div>
+    </div>
+
+    <!-- ════ 单图识别模式 ════ -->
+    <div id="mode-single">
+        <div class="max-w-lg mx-auto">
+            <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                <div class="flex items-center justify-between mb-5">
+                    <h3 class="font-semibold text-slate-800 text-sm">上传工程图纸</h3>
+                    <span id="single-badge" class="hidden result-tag bg-emerald-50 text-emerald-700 border border-emerald-100">
+                        <i class="fa-solid fa-circle-check text-xs"></i>已就绪
+                    </span>
+                </div>
+                <div id="zone-single" class="upload-zone rounded-xl p-8 text-center cursor-pointer relative group" onclick="document.getElementById('file-single').click()">
+                    <input type="file" id="file-single" class="hidden" accept=".pdf" onchange="handleSingleFile(this)">
+                    <div id="placeholder-single" class="py-4">
+                        <div class="w-14 h-14 rounded-full bg-slate-50 flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <i class="fa-solid fa-cloud-arrow-up text-slate-400 text-xl"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-700 mb-1">点击或拖拽上传 PDF</p>
+                        <p class="text-xs text-slate-400">支持 CAD 工程图纸，最大 50MB</p>
+                    </div>
+                    <div id="info-single" class="hidden text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-red-500 shrink-0">
+                                <i class="fa-solid fa-file-pdf"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-medium text-slate-800 truncate" id="single-name"></p>
+                                <p class="text-xs text-slate-500 mt-0.5" id="single-size"></p>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" id="remove-single" class="hidden absolute top-3 right-3 w-7 h-7 rounded-full bg-white shadow-sm border border-slate-200 flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-200 transition-colors" onclick="event.stopPropagation(); removeSingleFile()">
+                        <i class="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                </div>
+                <div class="mt-5 text-center">
+                    <button id="btn-single" onclick="startSingle()" disabled
+                        class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl text-white font-medium text-sm shadow-lg shadow-primary-500/20 disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        <span>开始识别</span>
+                    </button>
+                    <p id="single-hint" class="mt-2.5 text-xs text-slate-400">上传图纸后启动识别</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 单图进度 -->
+        <div id="single-progress" class="hidden max-w-lg mx-auto mt-6">
+            <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                <div class="flex justify-between items-center mb-3">
+                    <span class="text-sm font-medium text-slate-700" id="sp-text">准备中...</span>
+                    <span class="text-sm font-semibold text-primary-600 tabular-nums" id="sp-pct">0%</span>
+                </div>
+                <div class="progress-track h-2">
+                    <div id="sp-bar" class="progress-fill h-full bg-primary-600 rounded-full" style="width:0%"></div>
+                </div>
+                <div class="flex items-center gap-2 mt-3 text-xs text-slate-400">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i>
+                    <span id="sp-detail">初始化引擎...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 单图结果 -->
+        <div id="single-result" class="hidden max-w-lg mx-auto mt-6 fade-in">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                        <h3 class="font-semibold text-slate-800 text-sm">识别完成</h3>
+                        <p class="text-xs text-slate-400 mt-0.5" id="single-result-name">—</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="downloadSingleResult()" class="btn-outline inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-slate-600">
+                            <i class="fa-solid fa-download text-xs"></i>下载 Excel
+                        </button>
+                        <button onclick="useForCompare()" class="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-white">
+                            <i class="fa-solid fa-code-compare text-xs"></i>用于比对
+                        </button>
+                    </div>
+                </div>
+                <div class="px-6 py-5">
+                    <div class="grid grid-cols-3 gap-4 mb-5">
+                        <div class="text-center">
+                            <p class="text-2xl font-bold text-slate-800 tabular-nums" id="sr-views">—</p>
+                            <p class="text-xs text-slate-400 mt-1">视图数</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-2xl font-bold text-slate-800 tabular-nums" id="sr-elements">—</p>
+                            <p class="text-xs text-slate-400 mt-1">识别元素</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-2xl font-bold text-emerald-600 tabular-nums">✓</p>
+                            <p class="text-xs text-slate-400 mt-1">状态</p>
+                        </div>
+                    </div>
+                    <div id="sr-path-box" class="bg-slate-50 rounded-lg px-4 py-3">
+                        <p class="text-xs text-slate-500 mb-1">输出路径</p>
+                        <p class="text-xs font-mono text-slate-700 break-all" id="sr-path">—</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ════ 比对模式 ════ -->
+    <div id="mode-compare" class="hidden">
+
+        <!-- 上传区 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 relative">
+
+            <!-- 图纸 A -->
+            <div id="card-a" class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 transition-all duration-300">
+                <div class="flex items-center justify-between mb-5">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-slate-300 transition-colors" id="dot-a"></div>
+                        <h3 class="font-semibold text-slate-800 text-sm">基准图纸 <span class="text-slate-400 font-normal">版本 A</span></h3>
+                    </div>
+                    <span id="badge-a" class="hidden result-tag bg-emerald-50 text-emerald-700 border border-emerald-100">
+                        <i class="fa-solid fa-circle-check text-xs"></i>已就绪
+                    </span>
+                </div>
+                <div id="zone-a" class="upload-zone rounded-xl p-8 text-center cursor-pointer relative group" onclick="document.getElementById('file-a').click()">
+                    <input type="file" id="file-a" class="hidden" accept=".pdf" onchange="handleCompareFile(this, 'a')">
+                    <div id="placeholder-a" class="py-4">
+                        <div class="w-12 h-12 rounded-full bg-slate-50 flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <i class="fa-solid fa-cloud-arrow-up text-slate-400 text-lg"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-700 mb-1">点击或拖拽上传 PDF</p>
+                        <p class="text-xs text-slate-400">最大 50MB</p>
+                    </div>
+                    <div id="info-a" class="hidden text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-red-500 shrink-0">
+                                <i class="fa-solid fa-file-pdf"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-medium text-slate-800 truncate" id="name-a"></p>
+                                <div class="flex items-center gap-2 mt-0.5">
+                                    <p class="text-xs text-slate-500" id="size-a"></p>
+                                    <span id="ver-a" class="hidden result-tag bg-blue-50 text-blue-700 border border-blue-100"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" id="remove-a" class="hidden absolute top-3 right-3 w-7 h-7 rounded-full bg-white shadow-sm border border-slate-200 flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-200 transition-colors" onclick="event.stopPropagation(); removeCompareFile('a')">
+                        <i class="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 中间箭头 -->
+            <div class="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
+                <div class="w-10 h-10 rounded-full bg-white shadow-md border border-slate-100 flex items-center justify-center text-slate-400">
+                    <i class="fa-solid fa-arrows-left-right text-sm"></i>
+                </div>
+            </div>
+
+            <!-- 图纸 B -->
+            <div id="card-b" class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 transition-all duration-300">
+                <div class="flex items-center justify-between mb-5">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-slate-300 transition-colors" id="dot-b"></div>
+                        <h3 class="font-semibold text-slate-800 text-sm">对比图纸 <span class="text-slate-400 font-normal">版本 B</span></h3>
+                    </div>
+                    <span id="badge-b" class="hidden result-tag bg-emerald-50 text-emerald-700 border border-emerald-100">
+                        <i class="fa-solid fa-circle-check text-xs"></i>已就绪
+                    </span>
+                </div>
+                <div id="zone-b" class="upload-zone rounded-xl p-8 text-center cursor-pointer relative group" onclick="document.getElementById('file-b').click()">
+                    <input type="file" id="file-b" class="hidden" accept=".pdf" onchange="handleCompareFile(this, 'b')">
+                    <div id="placeholder-b" class="py-4">
+                        <div class="w-12 h-12 rounded-full bg-slate-50 flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <i class="fa-solid fa-cloud-arrow-up text-slate-400 text-lg"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-700 mb-1">点击或拖拽上传 PDF</p>
+                        <p class="text-xs text-slate-400">最大 50MB</p>
+                    </div>
+                    <div id="info-b" class="hidden text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-red-500 shrink-0">
+                                <i class="fa-solid fa-file-pdf"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-medium text-slate-800 truncate" id="name-b"></p>
+                                <div class="flex items-center gap-2 mt-0.5">
+                                    <p class="text-xs text-slate-500" id="size-b"></p>
+                                    <span id="ver-b" class="hidden result-tag bg-indigo-50 text-indigo-700 border border-indigo-100"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" id="remove-b" class="hidden absolute top-3 right-3 w-7 h-7 rounded-full bg-white shadow-sm border border-slate-200 flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-200 transition-colors" onclick="event.stopPropagation(); removeCompareFile('b')">
+                        <i class="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 比对按钮 -->
+        <div class="text-center mb-10">
+            <button id="btn-compare" onclick="startCompare()" disabled
+                class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl text-white font-medium text-sm shadow-lg shadow-primary-500/20 disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed">
+                <i class="fa-solid fa-code-compare"></i>
+                <span>开始比对</span>
+            </button>
+            <p id="compare-hint" class="mt-3 text-xs text-slate-400">请上传两份图纸后启动比对</p>
+        </div>
+
+        <!-- 比对进度 -->
+        <div id="compare-progress" class="hidden bg-white rounded-2xl p-6 shadow-sm border border-slate-100 mb-6">
+            <div class="flex justify-between items-center mb-3">
+                <span class="text-sm font-medium text-slate-700" id="cp-text">准备中...</span>
+                <span class="text-sm font-semibold text-primary-600 tabular-nums" id="cp-pct">0%</span>
+            </div>
+            <div class="progress-track h-2">
+                <div id="cp-bar" class="progress-fill h-full bg-primary-600 rounded-full" style="width:0%"></div>
+            </div>
+            <div class="flex items-center justify-between mt-3">
+                <div class="flex items-center gap-2 text-xs text-slate-400">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i>
+                    <span id="cp-detail">初始化...</span>
+                </div>
+                <!-- 阶段指示 -->
+                <div class="flex items-center gap-3 text-xs">
+                    <span id="stage-a" class="flex items-center gap-1 text-slate-300">
+                        <i class="fa-solid fa-circle text-xs"></i>识别 A
+                    </span>
+                    <span id="stage-b" class="flex items-center gap-1 text-slate-300">
+                        <i class="fa-solid fa-circle text-xs"></i>识别 B
+                    </span>
+                    <span id="stage-diff" class="flex items-center gap-1 text-slate-300">
+                        <i class="fa-solid fa-circle text-xs"></i>差异分析
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 比对结果区 -->
+        <div id="compare-result" class="hidden fade-in">
+
+            <!-- 统计卡 -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex items-center gap-5">
+                    <div class="w-12 h-12 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
+                        <i class="fa-solid fa-plus text-lg"></i>
+                    </div>
+                    <div>
+                        <p class="text-3xl font-bold text-slate-800 tabular-nums" id="stat-added">0</p>
+                        <p class="text-xs text-slate-500 mt-0.5">B 新增</p>
+                    </div>
+                </div>
+                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex items-center gap-5">
+                    <div class="w-12 h-12 rounded-xl bg-rose-50 flex items-center justify-center text-rose-600">
+                        <i class="fa-solid fa-minus text-lg"></i>
+                    </div>
+                    <div>
+                        <p class="text-3xl font-bold text-slate-800 tabular-nums" id="stat-removed">0</p>
+                        <p class="text-xs text-slate-500 mt-0.5">B 删除</p>
+                    </div>
+                </div>
+                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex items-center gap-5">
+                    <div class="w-12 h-12 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
+                        <i class="fa-solid fa-pen text-lg"></i>
+                    </div>
+                    <div>
+                        <p class="text-3xl font-bold text-slate-800 tabular-nums" id="stat-modified">0</p>
+                        <p class="text-xs text-slate-500 mt-0.5">修改</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 差异表 -->
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div class="px-6 py-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <h3 class="font-semibold text-slate-800">差异明细</h3>
+                    <div class="flex items-center gap-3">
+                        <!-- 筛选 -->
+                        <select id="filter-type" onchange="filterAndRender()" class="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-all">
+                            <option value="all">全部差异</option>
+                            <option value="added">仅新增</option>
+                            <option value="removed">仅删除</option>
+                            <option value="modified">仅修改</option>
+                        </select>
+                        <!-- 搜索 -->
+                        <div class="relative">
+                            <i class="fa-solid fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-300 text-xs pointer-events-none"></i>
+                            <input id="search-input" type="text" placeholder="搜索内容..." oninput="filterAndRender()" class="pl-7 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 w-40 transition-all">
+                        </div>
+                        <!-- 导出 -->
+                        <button onclick="exportCSV()" class="btn-outline inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600">
+                            <i class="fa-solid fa-file-csv text-xs"></i>导出 CSV
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 分组结果 -->
+                <div id="diff-groups" class="divide-y divide-slate-100">
+                    <!-- JS 填充 -->
+                </div>
+
+                <!-- 空态 -->
+                <div id="empty-diff" class="hidden text-center py-16">
+                    <div class="w-16 h-16 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4">
+                        <i class="fa-solid fa-check-double text-emerald-400 text-2xl"></i>
+                    </div>
+                    <p class="text-sm font-medium text-slate-600">两份图纸完全一致</p>
+                    <p class="text-xs text-slate-400 mt-1">未检测到任何工程差异</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<!-- ══ 全局加载遮罩 ══ -->
+<div id="loading-mask" class="hidden fixed inset-0 z-50 bg-slate-900/20 backdrop-blur-sm flex items-center justify-center">
+    <div class="bg-white rounded-2xl p-8 shadow-2xl flex flex-col items-center max-w-xs w-full mx-4">
+        <div class="relative w-12 h-12 mb-5">
+            <div class="absolute inset-0 rounded-full border-2 border-slate-100"></div>
+            <div class="absolute inset-0 rounded-full border-2 border-primary-600 border-t-transparent animate-spin"></div>
+        </div>
+        <p class="text-sm font-semibold text-slate-800" id="mask-text">处理中...</p>
+        <p class="text-xs text-slate-400 mt-1.5" id="mask-sub">请稍候</p>
+    </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+// 状态
+// ══════════════════════════════════════════════
+let currentMode = 'single';
+let singleFile = null;
+let singleResultPath = null;
+let compareFiles = { a: null, b: null };
+let compareResultData = [];
+let compareResultPaths = { a: null, b: null };
+
+// ══════════════════════════════════════════════
+// Toast 系统
+// ══════════════════════════════════════════════
+function toast(msg, type = 'info', duration = 4000) {
+    const colors = {
+        success: 'bg-emerald-600',
+        error:   'bg-rose-600',
+        warn:    'bg-amber-500',
+        info:    'bg-slate-700'
+    };
+    const icons = {
+        success: 'fa-circle-check',
+        error:   'fa-circle-xmark',
+        warn:    'fa-triangle-exclamation',
+        info:    'fa-circle-info'
+    };
+    const el = document.createElement('div');
+    el.className = `toast ${colors[type]} text-white rounded-xl px-4 py-3 flex items-start gap-3 shadow-lg`;
+    el.innerHTML = `<i class="fa-solid ${icons[type]} mt-0.5 shrink-0 text-sm"></i><span class="text-sm leading-snug">${escapeHtml(msg)}</span>`;
+    document.getElementById('toast-container').appendChild(el);
+    requestAnimationFrame(() => { el.classList.add('show'); });
+    setTimeout(() => {
+        el.classList.add('hide');
+        el.classList.remove('show');
+        el.addEventListener('transitionend', () => el.remove());
+    }, duration);
+}
+
+// ══════════════════════════════════════════════
+// 模式切换
+// ══════════════════════════════════════════════
+function switchMode(mode) {
+    currentMode = mode;
+    document.querySelectorAll('.mode-tab').forEach((t, i) => {
+        t.classList.toggle('active', (i === 0 && mode === 'single') || (i === 1 && mode === 'compare'));
+    });
+    document.getElementById('mode-single').classList.toggle('hidden', mode !== 'single');
+    document.getElementById('mode-compare').classList.toggle('hidden', mode !== 'compare');
+}
+
+// ══════════════════════════════════════════════
+// 单图识别
+// ══════════════════════════════════════════════
+function handleSingleFile(input) {
+    const file = input.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') { toast('仅支持 PDF 格式文件', 'warn'); return; }
+    if (file.size > 50 * 1024 * 1024) { toast('文件大小超过 50MB 限制', 'warn'); return; }
+
+    singleFile = file;
+    document.getElementById('zone-single').classList.add('filled');
+    document.getElementById('placeholder-single').classList.add('hidden');
+    document.getElementById('info-single').classList.remove('hidden');
+    document.getElementById('remove-single').classList.remove('hidden');
+    document.getElementById('single-badge').classList.remove('hidden');
+    document.getElementById('single-name').textContent = file.name;
+    document.getElementById('single-size').textContent = fmtSize(file.size);
+    document.getElementById('btn-single').disabled = false;
+    document.getElementById('single-hint').textContent = '文件已就绪，点击开始识别';
+    document.getElementById('single-hint').className = 'mt-2.5 text-xs text-primary-600 font-medium';
+}
+
+function removeSingleFile() {
+    singleFile = null; singleResultPath = null;
+    document.getElementById('file-single').value = '';
+    document.getElementById('zone-single').classList.remove('filled');
+    document.getElementById('placeholder-single').classList.remove('hidden');
+    document.getElementById('info-single').classList.add('hidden');
+    document.getElementById('remove-single').classList.add('hidden');
+    document.getElementById('single-badge').classList.add('hidden');
+    document.getElementById('btn-single').disabled = true;
+    document.getElementById('single-hint').textContent = '上传图纸后启动识别';
+    document.getElementById('single-hint').className = 'mt-2.5 text-xs text-slate-400';
+    document.getElementById('single-result').classList.add('hidden');
+    document.getElementById('single-progress').classList.add('hidden');
+}
+
+function setSingleProgress(pct, text, detail) {
+    document.getElementById('sp-bar').style.width = pct + '%';
+    document.getElementById('sp-pct').textContent = pct + '%';
+    document.getElementById('sp-text').textContent = text;
+    document.getElementById('sp-detail').textContent = detail;
+}
+
+async function startSingle() {
+    if (!singleFile) return;
+    document.getElementById('btn-single').disabled = true;
+    document.getElementById('single-result').classList.add('hidden');
+    document.getElementById('single-progress').classList.remove('hidden');
+    setSingleProgress(10, '上传图纸...', '建立连接');
+    try {
+        const form = new FormData();
+        form.append('pdf', singleFile);
+        setSingleProgress(30, 'AI 视觉识别...', '多模态分析中');
+        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || '识别失败');
+        setSingleProgress(80, '整理结构化数据...', '写入 Excel');
+        await sleep(300);
+        setSingleProgress(100, '识别完成', '');
+        singleResultPath = data.output;
+        await sleep(400);
+        document.getElementById('single-progress').classList.add('hidden');
+        showSingleResult(data);
+        toast('识别成功，Excel 已生成', 'success');
+    } catch(e) {
+        document.getElementById('single-progress').classList.add('hidden');
+        document.getElementById('btn-single').disabled = false;
+        toast('识别失败：' + e.message, 'error');
+    }
+}
+
+function showSingleResult(data) {
+    document.getElementById('single-result').classList.remove('hidden');
+    document.getElementById('single-result-name').textContent = singleFile?.name || '—';
+    document.getElementById('sr-views').textContent = Array.isArray(data.views) ? data.views.length : (data.views || '—');
+    document.getElementById('sr-elements').textContent = data.elements || '—';
+    document.getElementById('sr-path').textContent = data.output || '—';
+}
+
+async function downloadSingleResult() {
+    if (!singleResultPath) { toast('无可下载结果', 'warn'); return; }
+    try {
+        const res = await fetch('/api/download?path=' + encodeURIComponent(singleResultPath));
+        if (!res.ok) throw new Error('下载失败');
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = singleFile ? singleFile.name.replace('.pdf', '_识别结果.xlsx') : 'result.xlsx';
+        a.click();
+    } catch(e) { toast('下载失败：' + e.message, 'error'); }
+}
+
+function useForCompare() {
+    if (!singleFile || !singleResultPath) return;
+    switchMode('compare');
+    // 将单图结果预填入比对A侧
+    compareFiles.a = singleFile;
+    compareResultPaths.a = singleResultPath;
+    setCompareFileUI('a', singleFile);
+    toast('已将识别结果填入图纸 A，请继续上传图纸 B', 'info');
+}
+
+// ══════════════════════════════════════════════
+// 比对模式
+// ══════════════════════════════════════════════
+['a', 'b'].forEach(side => {
+    // 拖拽
+    const zoneEl = () => document.getElementById('zone-' + side);
+    document.addEventListener('DOMContentLoaded', () => {
+        zoneEl().addEventListener('dragover', e => { e.preventDefault(); zoneEl().classList.add('drag-over'); });
+        zoneEl().addEventListener('dragleave', () => zoneEl().classList.remove('drag-over'));
+        zoneEl().addEventListener('drop', e => {
+            e.preventDefault(); zoneEl().classList.remove('drag-over');
+            if (e.dataTransfer.files.length) handleCompareFile({ files: e.dataTransfer.files }, side);
+        });
+    });
+});
+
+// 补充拖拽（DOMContentLoaded 可能已过）
+setTimeout(() => {
+    ['a','b'].forEach(side => {
+        const zone = document.getElementById('zone-' + side);
+        if (!zone) return;
+        zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+        zone.addEventListener('drop', e => {
+            e.preventDefault(); zone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) handleCompareFile({ files: e.dataTransfer.files }, side);
+        });
+    });
+}, 0);
+
+function handleCompareFile(input, side) {
+    const file = input.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') { toast('仅支持 PDF 格式', 'warn'); return; }
+    if (file.size > 50 * 1024 * 1024) { toast('文件超过 50MB 限制', 'warn'); return; }
+    compareFiles[side] = file;
+    compareResultPaths[side] = null; // 重置，需重新识别
+    setCompareFileUI(side, file);
+    checkCompareReady();
+}
+
+function setCompareFileUI(side, file) {
+    document.getElementById('zone-' + side).classList.add('filled');
+    document.getElementById('placeholder-' + side).classList.add('hidden');
+    document.getElementById('info-' + side).classList.remove('hidden');
+    document.getElementById('remove-' + side).classList.remove('hidden');
+    document.getElementById('badge-' + side).classList.remove('hidden');
+    document.getElementById('dot-' + side).classList.remove('bg-slate-300');
+    document.getElementById('dot-' + side).classList.add('bg-emerald-500');
+    document.getElementById('name-' + side).textContent = file.name;
+    document.getElementById('size-' + side).textContent = fmtSize(file.size);
+    // 版本号提取
+    const verMatch = file.name.match(/[_\-\s]?[vV](\d+[\.\d]*)|[_\-](\d{8})|[_ ]?[Rr][Ee][Vv][_\-\s]?([A-Z0-9]+)/);
+    const verEl = document.getElementById('ver-' + side);
+    if (verMatch) {
+        const ver = verMatch[1] || verMatch[2] || verMatch[3];
+        verEl.textContent = 'v' + ver;
+        verEl.classList.remove('hidden');
+    } else {
+        verEl.classList.add('hidden');
+    }
+}
+
+function removeCompareFile(side) {
+    compareFiles[side] = null;
+    compareResultPaths[side] = null;
+    document.getElementById('file-' + side).value = '';
+    document.getElementById('zone-' + side).classList.remove('filled');
+    document.getElementById('placeholder-' + side).classList.remove('hidden');
+    document.getElementById('info-' + side).classList.add('hidden');
+    document.getElementById('remove-' + side).classList.add('hidden');
+    document.getElementById('badge-' + side).classList.add('hidden');
+    document.getElementById('dot-' + side).classList.remove('bg-emerald-500');
+    document.getElementById('dot-' + side).classList.add('bg-slate-300');
+    checkCompareReady();
+}
+
+function checkCompareReady() {
+    const ready = compareFiles.a && compareFiles.b;
+    document.getElementById('btn-compare').disabled = !ready;
+    const hint = document.getElementById('compare-hint');
+    if (ready) {
+        hint.textContent = '两份图纸已就绪，点击开始比对';
+        hint.className = 'mt-3 text-xs text-primary-600 font-medium';
+    } else {
+        hint.textContent = '请上传两份图纸后启动比对';
+        hint.className = 'mt-3 text-xs text-slate-400';
+    }
+}
+
+function setStage(stage) {
+    ['a','b','diff'].forEach(s => {
+        const el = document.getElementById('stage-' + s);
+        if (s === stage) {
+            el.className = 'flex items-center gap-1 text-primary-600 font-medium';
+            el.querySelector('i').className = 'fa-solid fa-circle-notch fa-spin text-xs';
+        } else if (['a','b','diff'].indexOf(s) < ['a','b','diff'].indexOf(stage)) {
+            el.className = 'flex items-center gap-1 text-emerald-600';
+            el.querySelector('i').className = 'fa-solid fa-circle-check text-xs';
+        } else {
+            el.className = 'flex items-center gap-1 text-slate-300';
+            el.querySelector('i').className = 'fa-solid fa-circle text-xs';
+        }
+    });
+}
+
+function setCmpProgress(pct, text, detail) {
+    document.getElementById('cp-bar').style.width = pct + '%';
+    document.getElementById('cp-pct').textContent = pct + '%';
+    document.getElementById('cp-text').textContent = text;
+    document.getElementById('cp-detail').textContent = detail;
+    document.getElementById('mask-text').textContent = text;
+    document.getElementById('mask-sub').textContent = detail;
+}
+
+async function startCompare() {
+    if (!compareFiles.a || !compareFiles.b) return;
+    document.getElementById('btn-compare').disabled = true;
+    document.getElementById('compare-result').classList.add('hidden');
+    document.getElementById('compare-progress').classList.remove('hidden');
+    document.getElementById('loading-mask').classList.remove('hidden');
+
+    try {
+        setStage('a');
+        setCmpProgress(8, '上传并识别图纸 A...', '多模态视觉分析');
+        // 若已有路径（从单图结果复用），跳过识别
+        if (!compareResultPaths.a) {
+            const resA = await uploadAndRecognize(compareFiles.a);
+            compareResultPaths.a = resA.output;
+        }
+
+        setStage('b');
+        setCmpProgress(40, '上传并识别图纸 B...', '多模态视觉分析');
+        if (!compareResultPaths.b) {
+            const resB = await uploadAndRecognize(compareFiles.b);
+            compareResultPaths.b = resB.output;
+        }
+
+        setStage('diff');
+        setCmpProgress(72, '结构化差异分析...', '智能匹配算法');
+        await sleep(300);
+
+        const cmp = await fetch('/api/compare/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path_a: compareResultPaths.a, path_b: compareResultPaths.b })
+        }).then(r => r.json());
+
+        if (!cmp.success) throw new Error(cmp.error || '比对失败');
+
+        setCmpProgress(100, '比对完成', '');
+        await sleep(400);
+
+        document.getElementById('compare-progress').classList.add('hidden');
+        document.getElementById('loading-mask').classList.add('hidden');
+        renderCompareResult(cmp);
+        toast(`比对完成：共 ${(cmp.summary.added + cmp.summary.removed + cmp.summary.modified)} 项差异`, 'success');
+
+    } catch(e) {
+        document.getElementById('compare-progress').classList.add('hidden');
+        document.getElementById('loading-mask').classList.add('hidden');
+        document.getElementById('btn-compare').disabled = false;
+        toast('比对失败：' + e.message, 'error', 6000);
+    }
+}
+
+async function uploadAndRecognize(file) {
+    const form = new FormData();
+    form.append('pdf', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '识别失败');
+    return data;
+}
+
+// ══════════════════════════════════════════════
+// 渲染比对结果（分组 + diff 高亮）
+// ══════════════════════════════════════════════
+function renderCompareResult(data) {
+    compareResultData = data.diffs || [];
+    document.getElementById('stat-added').textContent = data.summary.added;
+    document.getElementById('stat-removed').textContent = data.summary.removed;
+    document.getElementById('stat-modified').textContent = data.summary.modified;
+    document.getElementById('compare-result').classList.remove('hidden');
+    filterAndRender();
+}
+
+function filterAndRender() {
+    const type = document.getElementById('filter-type').value;
+    const query = document.getElementById('search-input').value.trim().toLowerCase();
+
+    let filtered = compareResultData;
+    if (type !== 'all') filtered = filtered.filter(d => d.type === type);
+    if (query) filtered = filtered.filter(d =>
+        (d.content_a + d.content_b + d.category + d.position).toLowerCase().includes(query)
+    );
+
+    const container = document.getElementById('diff-groups');
+    container.innerHTML = '';
+
+    if (filtered.length === 0) {
+        document.getElementById('empty-diff').classList.remove('hidden');
+        return;
+    }
+    document.getElementById('empty-diff').classList.add('hidden');
+
+    // 按 category 分组
+    const groups = {};
+    filtered.forEach(d => {
+        if (!groups[d.category]) groups[d.category] = [];
+        groups[d.category].push(d);
+    });
+
+    Object.entries(groups).forEach(([cat, diffs]) => {
+        const groupEl = document.createElement('div');
+
+        const addedN = diffs.filter(d=>d.type==='added').length;
+        const removedN = diffs.filter(d=>d.type==='removed').length;
+        const modifiedN = diffs.filter(d=>d.type==='modified').length;
+        const badgeParts = [];
+        if (addedN) badgeParts.push(`<span class="result-tag bg-emerald-100 text-emerald-700">+${addedN}</span>`);
+        if (removedN) badgeParts.push(`<span class="result-tag bg-rose-100 text-rose-700">-${removedN}</span>`);
+        if (modifiedN) badgeParts.push(`<span class="result-tag bg-amber-100 text-amber-700">~${modifiedN}</span>`);
+
+        groupEl.innerHTML = `
+            <div class="group-header px-6 py-3.5 flex items-center justify-between bg-slate-50 border-b border-slate-100" onclick="toggleGroup(this)">
+                <div class="flex items-center gap-3">
+                    <i class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform"></i>
+                    <span class="text-sm font-semibold text-slate-700">${escapeHtml(cat)}</span>
+                    <span class="text-xs text-slate-400">${diffs.length} 项</span>
+                </div>
+                <div class="flex items-center gap-1.5">${badgeParts.join('')}</div>
+            </div>
+            <div class="group-body overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b border-slate-100">
+                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-10">#</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-20">类型</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">图纸 A</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">图纸 B</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-28">位置</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-50">
+                        ${diffs.map((d, i) => renderDiffRow(d, i)).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+        container.appendChild(groupEl);
+    });
+}
+
+function renderDiffRow(d, i) {
+    const rowBg = { added: 'bg-emerald-50/50', removed: 'bg-rose-50/50', modified: 'bg-amber-50/40' }[d.type];
+    const badge = {
+        added:    '<span class="result-tag bg-emerald-100 text-emerald-700">新增</span>',
+        removed:  '<span class="result-tag bg-rose-100 text-rose-700">删除</span>',
+        modified: '<span class="result-tag bg-amber-100 text-amber-700">修改</span>'
+    }[d.type];
+
+    const aHtml = d.content_a ? wordDiff(d.content_a, d.content_b, 'del') : '<span class="text-slate-300">—</span>';
+    const bHtml = d.content_b ? wordDiff(d.content_b, d.content_a, 'add') : '<span class="text-slate-300">—</span>';
+
+    return `<tr class="diff-row ${rowBg}">
+        <td class="px-5 py-3.5 text-slate-400 font-mono text-xs">${i+1}</td>
+        <td class="px-5 py-3.5">${badge}</td>
+        <td class="px-5 py-3.5 font-mono text-xs text-slate-700 max-w-xs break-all leading-relaxed">${aHtml}</td>
+        <td class="px-5 py-3.5 font-mono text-xs text-slate-700 max-w-xs break-all leading-relaxed">${bHtml}</td>
+        <td class="px-5 py-3.5 text-xs text-slate-400 font-mono">${escapeHtml(d.position || '—')}</td>
+    </tr>`;
+}
+
+// 逐词 diff 高亮
+function wordDiff(text, other, mode) {
+    if (!other || !text) return escapeHtml(text || '');
+    const wordsA = text.split(/(\s+|[|,])/).filter(Boolean);
+    const wordsB = other.split(/(\s+|[|,])/).filter(Boolean);
+    const setB = new Set(wordsB);
+    const setA = new Set(wordsA);
+
+    return wordsA.map(w => {
+        const ew = escapeHtml(w);
+        if (/^\s+$/.test(w)) return ew;
+        if (mode === 'del' && !setB.has(w)) return `<span class="diff-del">${ew}</span>`;
+        if (mode === 'add' && !setA.has(w)) return `<span class="diff-add">${ew}</span>`;
+        return ew;
+    }).join('');
+}
+
+function toggleGroup(header) {
+    const body = header.nextElementSibling;
+    const icon = header.querySelector('i.fa-chevron-down');
+    body.classList.toggle('collapsed');
+    icon.style.transform = body.classList.contains('collapsed') ? 'rotate(-90deg)' : '';
+}
+
+// ══════════════════════════════════════════════
+// 导出 CSV
+// ══════════════════════════════════════════════
+function exportCSV() {
+    if (!compareResultData.length) { toast('暂无比对数据', 'warn'); return; }
+    const headers = ['序号', '类型', '类别', '位置', '图纸A内容', '图纸B内容'];
+    const rows = compareResultData.map((d, i) => [
+        i+1,
+        { added:'新增', removed:'删除', modified:'修改' }[d.type],
+        d.category, d.position || '', d.content_a || '', d.content_b || ''
+    ]);
+    const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `diff_${dateStr()}.csv`;
+    a.click();
+    toast('CSV 已下载', 'success');
+}
+
+// ══════════════════════════════════════════════
+// 工具
+// ══════════════════════════════════════════════
+function fmtSize(bytes) {
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/1024/1024).toFixed(2) + ' MB';
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function dateStr() { return new Date().toISOString().slice(0,16).replace('T','_').replace(':',''); }
+function escapeHtml(text) {
+    if (!text) return '';
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+</script>
+</body>
+</html>
