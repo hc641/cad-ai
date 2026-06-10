@@ -364,33 +364,47 @@
         <!-- 比对结果区 -->
         <div id="compare-result" class="hidden fade-in">
 
-            <!-- 统计卡 -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex items-center gap-5">
-                    <div class="w-12 h-12 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
-                        <i class="fa-solid fa-plus text-lg"></i>
+            <!-- 统计卡：真实变更 -->
+            <div class="mb-3">
+                <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">真实工程变更 (高/中置信度)</h4>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600"><i class="fa-solid fa-plus"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-added">0</p><p class="text-xs text-slate-400">新增</p></div>
                     </div>
-                    <div>
-                        <p class="text-3xl font-bold text-slate-800 tabular-nums" id="stat-added">0</p>
-                        <p class="text-xs text-slate-500 mt-0.5">B 新增</p>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-rose-50 flex items-center justify-center text-rose-600"><i class="fa-solid fa-minus"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-removed">0</p><p class="text-xs text-slate-400">删除</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600"><i class="fa-solid fa-pen"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-modified">0</p><p class="text-xs text-slate-400">修改</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-primary-50 flex items-center justify-center text-primary-600"><i class="fa-solid fa-arrow-right-arrow-left"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-renum">0</p><p class="text-xs text-slate-400">重编号</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-violet-50 flex items-center justify-center text-violet-600"><i class="fa-solid fa-table-list"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-deviation">0</p><p class="text-xs text-slate-400">偏差覆盖</p></div>
                     </div>
                 </div>
-                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex items-center gap-5">
-                    <div class="w-12 h-12 rounded-xl bg-rose-50 flex items-center justify-center text-rose-600">
-                        <i class="fa-solid fa-minus text-lg"></i>
+            </div>
+            <!-- 统计卡：疑似噪声 -->
+            <div class="mb-8">
+                <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">疑似 OCR 噪声 (低置信度，建议忽略)</h4>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div class="stat-card bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3 opacity-60">
+                        <div class="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400"><i class="fa-solid fa-plus text-xs"></i></div>
+                        <div><p class="text-lg font-bold text-slate-500 tabular-nums" id="stat-noise-added">0</p><p class="text-xs text-slate-400">新增</p></div>
                     </div>
-                    <div>
-                        <p class="text-3xl font-bold text-slate-800 tabular-nums" id="stat-removed">0</p>
-                        <p class="text-xs text-slate-500 mt-0.5">B 删除</p>
+                    <div class="stat-card bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3 opacity-60">
+                        <div class="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400"><i class="fa-solid fa-minus text-xs"></i></div>
+                        <div><p class="text-lg font-bold text-slate-500 tabular-nums" id="stat-noise-removed">0</p><p class="text-xs text-slate-400">删除</p></div>
                     </div>
-                </div>
-                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex items-center gap-5">
-                    <div class="w-12 h-12 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
-                        <i class="fa-solid fa-pen text-lg"></i>
-                    </div>
-                    <div>
-                        <p class="text-3xl font-bold text-slate-800 tabular-nums" id="stat-modified">0</p>
-                        <p class="text-xs text-slate-500 mt-0.5">修改</p>
+                    <div class="stat-card bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3 opacity-60">
+                        <div class="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400"><i class="fa-solid fa-pen text-xs"></i></div>
+                        <div><p class="text-lg font-bold text-slate-500 tabular-nums" id="stat-noise-modified">0</p><p class="text-xs text-slate-400">修改</p></div>
                     </div>
                 </div>
             </div>
@@ -398,22 +412,41 @@
             <!-- 差异表 -->
             <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
                 <div class="px-6 py-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <h3 class="font-semibold text-slate-800">差异明细</h3>
-                    <div class="flex items-center gap-3">
-                        <!-- 筛选 -->
+                    <h3 class="font-semibold text-slate-800">差异明细 <span class="text-xs text-slate-400 font-normal ml-1" id="diff-total-label"></span></h3>
+                    <div class="flex items-center gap-3 flex-wrap">
+                        <!-- 置信度筛选 -->
+                        <select id="filter-conf" onchange="filterAndRender()" class="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-all">
+                            <option value="all">全部置信度</option>
+                            <option value="high">高置信度 (真实变更)</option>
+                            <option value="medium">中置信度</option>
+                            <option value="low">低置信度 (疑似噪声)</option>
+                        </select>
+                        <!-- 类型筛选 -->
                         <select id="filter-type" onchange="filterAndRender()" class="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-all">
-                            <option value="all">全部差异</option>
+                            <option value="all">全部类型</option>
                             <option value="added">仅新增</option>
                             <option value="removed">仅删除</option>
                             <option value="modified">仅修改</option>
                         </select>
+                        <!-- 实体类型筛选 -->
+                        <select id="filter-entity" onchange="filterAndRender()" class="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-all">
+                            <option value="all">全部实体</option>
+                            <option value="dimension">尺寸</option>
+                            <option value="gdt">GD&T</option>
+                            <option value="note">技术要求</option>
+                            <option value="bom">BOM</option>
+                            <option value="key_characteristic">关键特性</option>
+                            <option value="drawing_info">图纸信息</option>
+                            <option value="deviation_override">偏差覆盖</option>
+                            <option value="surface_roughness">表面粗糙度</option>
+                        </select>
                         <!-- 搜索 -->
                         <div class="relative">
                             <i class="fa-solid fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-300 text-xs pointer-events-none"></i>
-                            <input id="search-input" type="text" placeholder="搜索内容..." oninput="filterAndRender()" class="pl-7 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 w-40 transition-all">
+                            <input id="search-input" type="text" placeholder="搜索值/视图..." oninput="filterAndRender()" class="pl-7 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 w-36 transition-all">
                         </div>
                         <!-- 导出 -->
-                        <button onclick="exportCSV()" class="btn-outline inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600">
+                        <button onclick="exportSmartCSV()" class="btn-outline inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600">
                             <i class="fa-solid fa-file-csv text-xs"></i>导出 CSV
                         </button>
                     </div>
@@ -746,7 +779,7 @@ async function startCompare() {
         setCmpProgress(72, '结构化差异分析...', '智能匹配算法');
         await sleep(300);
 
-        const cmp = await fetch('/api/compare/run', {
+        const cmp = await fetch('/api/compare/smart', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path_a: compareResultPaths.a, path_b: compareResultPaths.b })
@@ -760,7 +793,9 @@ async function startCompare() {
         document.getElementById('compare-progress').classList.add('hidden');
         document.getElementById('loading-mask').classList.add('hidden');
         renderCompareResult(cmp);
-        toast(`比对完成：共 ${(cmp.summary.added + cmp.summary.removed + cmp.summary.modified)} 项差异`, 'success');
+        const rc = cmp.summary.real_changes || {};
+const nc = cmp.summary.likely_noise || {};
+toast('比对完成：真实变更 ' + (rc.total || 0) + ' 项，疑似噪声 ' + (nc.total || 0) + ' 项，重编号 ' + (cmp.summary.re_numbered_count || 0) + ' 项', 'success');
 
     } catch(e) {
         document.getElementById('compare-progress').classList.add('hidden');
@@ -783,23 +818,42 @@ async function uploadAndRecognize(file) {
 // 渲染比对结果（分组 + diff 高亮）
 // ══════════════════════════════════════════════
 function renderCompareResult(data) {
-    compareResultData = data.diffs || [];
-    document.getElementById('stat-added').textContent = data.summary.added;
-    document.getElementById('stat-removed').textContent = data.summary.removed;
-    document.getElementById('stat-modified').textContent = data.summary.modified;
+    compareResultData = data.changes || [];
+    const rc = data.summary.real_changes || {};
+    document.getElementById('stat-added').textContent = rc.added || 0;
+    document.getElementById('stat-removed').textContent = rc.removed || 0;
+    document.getElementById('stat-modified').textContent = rc.modified || 0;
+    document.getElementById('stat-renum').textContent = data.summary.re_numbered_count || 0;
+    document.getElementById('stat-deviation').textContent = data.deviation_overrides || 0;
+    const noise = data.summary.likely_noise || {};
+    document.getElementById('stat-noise-added').textContent = noise.added || 0;
+    document.getElementById('stat-noise-removed').textContent = noise.removed || 0;
+    document.getElementById('stat-noise-modified').textContent = noise.modified || 0;
+    const total = (rc.total || 0) + (noise.total || 0);
+    document.getElementById('diff-total-label').textContent = '共 ' + total + ' 项，真实变更 ' + (rc.total || 0) + ' 项';
     document.getElementById('compare-result').classList.remove('hidden');
     filterAndRender();
 }
 
 function filterAndRender() {
-    const type = document.getElementById('filter-type').value;
+    const filterType = document.getElementById('filter-type').value;
+    const filterConf = document.getElementById('filter-conf').value;
+    const filterEntity = document.getElementById('filter-entity').value;
     const query = document.getElementById('search-input').value.trim().toLowerCase();
 
     let filtered = compareResultData;
-    if (type !== 'all') filtered = filtered.filter(d => d.type === type);
-    if (query) filtered = filtered.filter(d =>
-        (d.content_a + d.content_b + d.category + d.position).toLowerCase().includes(query)
-    );
+    if (filterType !== 'all') filtered = filtered.filter(d => d.type === filterType);
+    if (filterConf !== 'all') filtered = filtered.filter(d => d.confidence === filterConf);
+    if (filterEntity !== 'all') filtered = filtered.filter(d => d.entity_type === filterEntity);
+    if (query) filtered = filtered.filter(d => {
+        const old = d.old || {}, nev = d.new || {};
+        const searchable = [
+            old.dim_no, nev.dim_no, old.value, nev.value,
+            old.view, nev.view, old.tolerance, nev.tolerance,
+            d.reason, d.entity_type
+        ].join(' ').toLowerCase();
+        return searchable.includes(query);
+    });
 
     const container = document.getElementById('diff-groups');
     container.innerHTML = '';
@@ -810,89 +864,141 @@ function filterAndRender() {
     }
     document.getElementById('empty-diff').classList.add('hidden');
 
-    // 按 category 分组
+    const entityLabels = {
+        dimension: '尺寸标注', gdt: 'GD&T 几何公差', note: '技术要求',
+        bom: 'BOM 物料', key_characteristic: '关键特性',
+        drawing_info: '图纸信息',
+        deviation_override: '偏差覆盖 (Deviation Table)',
+        surface_roughness: '表面粗糙度'
+    };
     const groups = {};
     filtered.forEach(d => {
-        if (!groups[d.category]) groups[d.category] = [];
-        groups[d.category].push(d);
+        const et = d.entity_type || 'other';
+        const label = entityLabels[et] || et;
+        if (!groups[label]) groups[label] = [];
+        groups[label].push(d);
     });
 
     Object.entries(groups).forEach(([cat, diffs]) => {
         const groupEl = document.createElement('div');
 
-        const addedN = diffs.filter(d=>d.type==='added').length;
-        const removedN = diffs.filter(d=>d.type==='removed').length;
-        const modifiedN = diffs.filter(d=>d.type==='modified').length;
+        const highN = diffs.filter(d => d.confidence === 'high').length;
+        const medN = diffs.filter(d => d.confidence === 'medium').length;
+        const lowN = diffs.filter(d => d.confidence === 'low').length;
         const badgeParts = [];
-        if (addedN) badgeParts.push(`<span class="result-tag bg-emerald-100 text-emerald-700">+${addedN}</span>`);
-        if (removedN) badgeParts.push(`<span class="result-tag bg-rose-100 text-rose-700">-${removedN}</span>`);
-        if (modifiedN) badgeParts.push(`<span class="result-tag bg-amber-100 text-amber-700">~${modifiedN}</span>`);
+        if (highN) badgeParts.push('<span class="result-tag bg-rose-100 text-rose-700" title="真实变更">&#x1F534; ' + highN + '</span>');
+        if (medN) badgeParts.push('<span class="result-tag bg-amber-100 text-amber-700" title="待确认">&#x1F7E1; ' + medN + '</span>');
+        if (lowN) badgeParts.push('<span class="result-tag bg-slate-100 text-slate-500" title="疑似噪声">&#x26AA; ' + lowN + '</span>');
 
-        groupEl.innerHTML = `
-            <div class="group-header px-6 py-3.5 flex items-center justify-between bg-slate-50 border-b border-slate-100" onclick="toggleGroup(this)">
-                <div class="flex items-center gap-3">
-                    <i class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform"></i>
-                    <span class="text-sm font-semibold text-slate-700">${escapeHtml(cat)}</span>
-                    <span class="text-xs text-slate-400">${diffs.length} 项</span>
-                </div>
-                <div class="flex items-center gap-1.5">${badgeParts.join('')}</div>
-            </div>
-            <div class="group-body overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="border-b border-slate-100">
-                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-10">#</th>
-                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-20">类型</th>
-                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">图纸 A</th>
-                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">图纸 B</th>
-                            <th class="px-5 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-28">位置</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-50">
-                        ${diffs.map((d, i) => renderDiffRow(d, i)).join('')}
-                    </tbody>
-                </table>
-            </div>
-        `;
+        groupEl.innerHTML = '<div class="group-header px-6 py-3.5 flex items-center justify-between bg-slate-50 border-b border-slate-100" onclick="toggleGroup(this)">' +
+            '<div class="flex items-center gap-3">' +
+                '<i class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform"></i>' +
+                '<span class="text-sm font-semibold text-slate-700">' + esc(cat) + '</span>' +
+                '<span class="text-xs text-slate-400">' + diffs.length + ' 项</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-1.5">' + badgeParts.join('') + '</div>' +
+            '</div>' +
+            '<div class="group-body overflow-x-auto">' +
+                '<table class="w-full text-sm">' +
+                    '<thead><tr class="border-b border-slate-100">' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-10">#</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-16">类型</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-16">置信度</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">旧值 (A)</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">新值 (B)</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">变更原因</th>' +
+                    '</tr></thead>' +
+                    '<tbody class="divide-y divide-slate-50">' +
+                        diffs.map((d, i) => renderSmartDiffRow(d, i)).join('') +
+                    '</tbody>' +
+                '</table>' +
+            '</div>';
         container.appendChild(groupEl);
     });
 }
 
-function renderDiffRow(d, i) {
-    const rowBg = { added: 'bg-emerald-50/50', removed: 'bg-rose-50/50', modified: 'bg-amber-50/40' }[d.type];
-    const badge = {
+function renderSmartDiffRow(d, i) {
+    const rowBg = d.confidence === 'low' ? 'opacity-50' : '';
+    const typeBadge = {
         added:    '<span class="result-tag bg-emerald-100 text-emerald-700">新增</span>',
         removed:  '<span class="result-tag bg-rose-100 text-rose-700">删除</span>',
         modified: '<span class="result-tag bg-amber-100 text-amber-700">修改</span>'
-    }[d.type];
+    }[d.type] || d.type;
 
-    const aHtml = d.content_a ? wordDiff(d.content_a, d.content_b, 'del') : '<span class="text-slate-300">—</span>';
-    const bHtml = d.content_b ? wordDiff(d.content_b, d.content_a, 'add') : '<span class="text-slate-300">—</span>';
+    const confBadge = {
+        high:   '<span class="result-tag bg-rose-100 text-rose-700">高</span>',
+        medium: '<span class="result-tag bg-amber-100 text-amber-700">中</span>',
+        low:    '<span class="result-tag bg-slate-100 text-slate-500">低</span>'
+    }[d.confidence] || '';
 
-    return `<tr class="diff-row ${rowBg}">
-        <td class="px-5 py-3.5 text-slate-400 font-mono text-xs">${i+1}</td>
-        <td class="px-5 py-3.5">${badge}</td>
-        <td class="px-5 py-3.5 font-mono text-xs text-slate-700 max-w-xs break-all leading-relaxed">${aHtml}</td>
-        <td class="px-5 py-3.5 font-mono text-xs text-slate-700 max-w-xs break-all leading-relaxed">${bHtml}</td>
-        <td class="px-5 py-3.5 text-xs text-slate-400 font-mono">${escapeHtml(d.position || '—')}</td>
-    </tr>`;
-}
+    const old = d.old || {};
+    const nev = d.new || {};
 
-// 逐词 diff 高亮
-function wordDiff(text, other, mode) {
-    if (!other || !text) return escapeHtml(text || '');
-    const wordsA = text.split(/(\s+|[|,])/).filter(Boolean);
-    const wordsB = other.split(/(\s+|[|,])/).filter(Boolean);
-    const setB = new Set(wordsB);
-    const setA = new Set(wordsA);
+    let oldHtml, newHtml;
+    if (d.entity_type === 'dimension') {
+        oldHtml = old.value ? '<span class="font-mono text-xs">' + esc(old.value) + '</span>' +
+            (old.nominal != null ? '<br><span class="text-xs text-slate-400">Nom:' + old.nominal + ' Tol:' + (old.lower != null ? old.lower : '-') + '/' + (old.upper != null ? old.upper : '-') + '</span>' : '') +
+            (old.view ? '<br><span class="text-xs text-slate-400">&#x1F4D0; ' + esc(old.view) + '</span>' : '') +
+            (old.dim_no ? '<br><span class="text-xs text-slate-400">No.' + esc(old.dim_no) + '</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+        newHtml = nev.value ? '<span class="font-mono text-xs font-semibold">' + esc(nev.value) + '</span>' +
+            (nev.nominal != null ? '<br><span class="text-xs text-slate-500">Nom:' + nev.nominal + ' Tol:' + (nev.lower != null ? nev.lower : '-') + '/' + (nev.upper != null ? nev.upper : '-') + '</span>' : '') +
+            (nev.view ? '<br><span class="text-xs text-slate-500">&#x1F4D0; ' + esc(nev.view) + '</span>' : '') +
+            (nev.dim_no ? '<br><span class="text-xs text-slate-500">No.' + esc(nev.dim_no) + '</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+    } else if (d.entity_type === 'gdt') {
+        oldHtml = old.tolerance ? '<span class="font-mono text-xs">Tol:' + esc(old.tolerance) + ' Datums:' + esc(old.datums || '') + '</span>' + (old.view ? '<br><span class="text-xs text-slate-400">&#x1F4D0; ' + esc(old.view) + '</span>' : '') : '<span class="text-slate-300">—</span>';
+        newHtml = nev.tolerance ? '<span class="font-mono text-xs font-semibold">Tol:' + esc(nev.tolerance) + ' Datums:' + esc(nev.datums || '') + '</span>' + (nev.view ? '<br><span class="text-xs text-slate-500">&#x1F4D0; ' + esc(nev.view) + '</span>' : '') : '<span class="text-slate-300">—</span>';
+    } else if (d.entity_type === 'drawing_info') {
+        oldHtml = d.old_value ? '<span class="text-xs">' + esc(d.old_value) + '</span>' : '<span class="text-slate-300">—</span>';
+        newHtml = d.new_value ? '<span class="text-xs font-semibold">' + esc(d.new_value) + '</span>' : '<span class="text-slate-300">—</span>';
+    } else if (d.entity_type === 'deviation_override') {
+        // old/new 的结构: {dim_ref, original_spec, deviated_spec}
+        // 或 details 中有 deviation_override_added（关联到主尺寸的情况）
+        const det = d.details || {};
+        if (det.deviation_override_added) {
+            oldHtml = det.original_spec
+                ? '<span class="font-mono text-xs">' + esc(det.original_spec) + '</span>'
+                    + '<br><span class="text-xs text-slate-400">DIM ' + esc(det.dim_no || '') + '</span>'
+                : '<span class="text-slate-300">—</span>';
+            newHtml = '<span class="font-mono text-xs font-semibold text-violet-700">'
+                + esc(det.deviation_override_added) + '</span>'
+                + '<br><span class="text-xs text-slate-400">偏差后规格</span>';
+        } else {
+            const ent = (d.type === 'removed' ? old : nev);
+            oldHtml = d.type !== 'added' && old.original_spec
+                ? '<span class="font-mono text-xs">' + esc(old.original_spec) + '</span>'
+                    + '<br><span class="text-xs text-slate-400">DIM ' + esc(old.dim_ref || '') + '</span>'
+                : '<span class="text-slate-300">—</span>';
+            newHtml = d.type !== 'removed' && nev.deviated_spec
+                ? '<span class="font-mono text-xs font-semibold text-violet-700">'
+                    + esc(nev.deviated_spec) + '</span>'
+                    + '<br><span class="text-xs text-slate-400">DIM ' + esc(nev.dim_ref || '') + '</span>'
+                : '<span class="text-slate-300">—</span>';
+        }
+    } else if (d.entity_type === 'surface_roughness') {
+        const det = d.details || {};
+        oldHtml = det.change
+            ? '<span class="font-mono text-xs">' + esc(det.change.split(' → ')[0] || '') + '</span>'
+                + (det.dim_no ? '<br><span class="text-xs text-slate-400">DIM #' + esc(det.dim_no) + '</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+        newHtml = det.change
+            ? '<span class="font-mono text-xs font-semibold">' + esc(det.change.split(' → ')[1] || '') + '</span>'
+                + (det.revision ? '<br><span class="text-xs text-violet-500">修订确认</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+    } else {
+        oldHtml = old.value || old.content || (old.part_number ? '零件:' + old.part_number : '') || '<span class="text-slate-300">—</span>';
+        newHtml = nev.value || nev.content || (nev.part_number ? '零件:' + nev.part_number : '') || '<span class="text-slate-300">—</span>';
+    }
 
-    return wordsA.map(w => {
-        const ew = escapeHtml(w);
-        if (/^\s+$/.test(w)) return ew;
-        if (mode === 'del' && !setB.has(w)) return `<span class="diff-del">${ew}</span>`;
-        if (mode === 'add' && !setA.has(w)) return `<span class="diff-add">${ew}</span>`;
-        return ew;
-    }).join('');
+    return '<tr class="diff-row ' + rowBg + '">' +
+        '<td class="px-4 py-3 text-slate-400 font-mono text-xs">' + (i + 1) + '</td>' +
+        '<td class="px-4 py-3">' + typeBadge + '</td>' +
+        '<td class="px-4 py-3">' + confBadge + '</td>' +
+        '<td class="px-4 py-3 max-w-xs break-all leading-relaxed">' + oldHtml + '</td>' +
+        '<td class="px-4 py-3 max-w-xs break-all leading-relaxed">' + newHtml + '</td>' +
+        '<td class="px-4 py-3 text-xs text-slate-500 max-w-xs">' + esc(d.reason || '') + '</td>' +
+    '</tr>';
 }
 
 function toggleGroup(header) {
@@ -905,21 +1011,23 @@ function toggleGroup(header) {
 // ══════════════════════════════════════════════
 // 导出 CSV
 // ══════════════════════════════════════════════
-function exportCSV() {
-    if (!compareResultData.length) { toast('暂无比对数据', 'warn'); return; }
-    const headers = ['序号', '类型', '类别', '位置', '图纸A内容', '图纸B内容'];
-    const rows = compareResultData.map((d, i) => [
-        i+1,
-        { added:'新增', removed:'删除', modified:'修改' }[d.type],
-        d.category, d.position || '', d.content_a || '', d.content_b || ''
-    ]);
-    const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `diff_${dateStr()}.csv`;
-    a.click();
-    toast('CSV 已下载', 'success');
+async function exportSmartCSV() {
+    if (!compareResultPaths.a || !compareResultPaths.b) { toast('暂无比对数据', 'warn'); return; }
+    try {
+        const res = await fetch('/api/compare/smart_csv', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path_a: compareResultPaths.a, path_b: compareResultPaths.b })
+        }).then(r => r.json());
+        if (!res.success || !res.csv) throw new Error('导出失败');
+        const bom = String.fromCharCode(0xFEFF);
+        const blob = new Blob([bom + res.csv], { type: 'text/csv;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'smart_diff_' + dateStr() + '.csv';
+        a.click();
+        toast('Smart Diff CSV 已下载', 'success');
+    } catch(e) { toast('导出失败：' + e.message, 'error'); }
 }
 
 // ══════════════════════════════════════════════
@@ -937,6 +1045,7 @@ function escapeHtml(text) {
     d.textContent = text;
     return d.innerHTML;
 }
+var esc = escapeHtml;
 </script>
 </body>
 </html>
