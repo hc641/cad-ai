@@ -36,6 +36,8 @@ class TileRenderer:
         self.overlap = overlap
         self.max_tiles = max_tiles
         self.ink_threshold = ink_threshold
+        # 每页渲染几何，供标注阶段复用： {page_no: {"scale","w_px","h_px"}}
+        self.page_dims = {}
 
     def _plan(self, page):
         scale = self.dpi / 72
@@ -62,6 +64,9 @@ class TileRenderer:
                 matrix=fitz.Matrix(scale, scale), colorspace=fitz.csGRAY)
             arr = np.frombuffer(gray.samples, dtype=np.uint8).reshape(
                 gray.height, gray.width)
+            # 记录本页渲染几何（标注阶段按相同 scale 重渲染整页）
+            self.page_dims[pno + 1] = {
+                "scale": scale, "w_px": gray.width, "h_px": gray.height}
 
             for ri in range(rows):
                 for ci in range(cols):
@@ -70,16 +75,29 @@ class TileRenderer:
                     sub = arr[y0:y0 + self.tile_px, x0:x0 + self.tile_px]
                     if sub.size == 0 or (sub < 200).mean() < self.ink_threshold:
                         continue
+                    # 实际块像素尺寸（边缘块会被页面边界裁短）
+                    w_px = int(min(self.tile_px, gray.width - x0))
+                    h_px = int(min(self.tile_px, gray.height - y0))
                     clip = fitz.Rect(
                         x0 / scale, y0 / scale,
                         (x0 + self.tile_px) / scale,
                         (y0 + self.tile_px) / scale)
                     pm = page.get_pixmap(
                         matrix=fitz.Matrix(scale, scale), clip=clip)
+                    # 模型实际看到的图像尺寸（fitz 对超出页面的区域填充白色，
+                    # pm.width/pm.height 才是模型收到的图像宽高，是 bbox 归一化的基准）
                     tiles.append({
                         "page": pno + 1,
                         "row": ri, "col": ci,
                         "png": pm.tobytes("png"),
+                        # 标注用几何：本块在整页像素坐标中的位置与尺寸
+                        "x0_px": x0, "y0_px": y0,
+                        "w_px": pm.width,   # 用实际渲染宽（含白边填充）
+                        "h_px": pm.height,  # 用实际渲染高（含白边填充）
+                        # 真实内容边界（不超过页面），用于裁剪坐标防溢出
+                        "content_w_px": w_px,
+                        "content_h_px": h_px,
+                        "scale": scale,
                     })
         doc.close()
         return tiles
@@ -144,6 +162,7 @@ type="surface_roughness"，value="Ra 0.3"或"Rz20 MAX"或"Ra 2μm MIN ALL AROUND
       "surface_param": "粗糙度参数类型(仅surface_roughness填)：Ra/Rz/Rmax",
       "belongs_to_view": "所属视图标签（尽量给出，按上面规则）",
       "view_confidence": "high | medium | low",
+      "bbox": "该元素在本图中的边界框，格式 [x0,y0,x1,y1]，用 0~1000 的整数表示相对本块左上角的归一化坐标(x向右,y向下)；务必尽量给出",
       "raw": "原始标注文字"
     }
   ]
@@ -223,11 +242,11 @@ class VisionAnalyzer:
                  "tolerance": "±0.1", "multiplier": "2X" if c % 2 else "",
                  "datums": [], "belongs_to_view": view,
                  "view_confidence": "high", "dim_no": str(c + 1),
-                 "is_ref": (c % 4 == 0),
+                 "is_ref": (c % 4 == 0), "bbox": [120, 150, 360, 230],
                  "raw": f"2X {20 + c}.1 ±0.1"},
                 {"type": "gdt", "value": "0.1", "tolerance": "",
                  "multiplier": "", "datums": ["E"],
-                 "gdt_tolerance": "0.1",
+                 "gdt_tolerance": "0.1", "bbox": [400, 300, 640, 380],
                  "belongs_to_view": view, "view_confidence": "medium",
                  "raw": "0.1 E"},
             ]
@@ -235,7 +254,7 @@ class VisionAnalyzer:
                 elements.append({
                     "type": "angle", "value": "30°",
                     "tolerance": "", "multiplier": "",
-                    "dim_no": str(c + 10),
+                    "dim_no": str(c + 10), "bbox": [200, 500, 380, 560],
                     "belongs_to_view": view,
                     "view_confidence": "high",
                     "raw": "30°",
@@ -245,7 +264,7 @@ class VisionAnalyzer:
                     "type": "surface_roughness", "value": "Ra 0.3",
                     "surface_param": "Ra",
                     "tolerance": "", "multiplier": "",
-                    "belongs_to_view": view,
+                    "belongs_to_view": view, "bbox": [600, 600, 820, 670],
                     "view_confidence": "high",
                     "raw": "Ra ≤ 0.3 ALL AROUND",
                 })
@@ -253,7 +272,7 @@ class VisionAnalyzer:
                 elements.append({
                     "type": "datum_feature", "value": "J→K",
                     "tolerance": "", "multiplier": "",
-                    "belongs_to_view": view,
+                    "belongs_to_view": view, "bbox": [700, 100, 880, 170],
                     "view_confidence": "medium",
                     "raw": "J arrow K",
                 })
@@ -344,24 +363,33 @@ def parse_dimension(value, tolerance="", raw=""):
     tol = (tolerance or "").strip()
     if not tol and raw:
         tm = re.search(
-            r"(±\s*\d+\.?\d*|\+\s*\d+\.?\d*\s*/\s*[-−]?\s*\d+\.?\d*|0\s+[-−]\s*\d+\.?\d*)",
+            r"(±\s*\d*\.?\d+"
+            r"|\+\s*\d*\.?\d+\s*/?\s*[-−]\s*\d*\.?\d+"   # +0.3/-0.2 或 +0.3 -0.2
+            r"|0\s*/?\s*[-−]\s*\d*\.?\d+)",
             raw)
         if tm:
             tol = tm.group(1)
 
-    m = re.search(r"±\s*(\d+(?:\.\d+)?)", tol)
+    m = re.search(r"±\s*(\d*\.?\d+)", tol)
     if m:
         t = float(m.group(1))
         lower, upper = nominal - t, nominal + t
     else:
-        m = re.search(r"\+\s*(\d+(?:\.\d+)?)\s*/\s*[-−]?\s*(\d+(?:\.\d+)?)", tol)
+        # 非对称：+up /或空格 -lo  （支持 +0.02/-0.35、+0.02 -0.35、+.02/-.35）
+        m = re.search(r"\+\s*(\d*\.?\d+)\s*/?\s*[-−]\s*(\d*\.?\d+)", tol)
         if m:
             up, lo = float(m.group(1)), float(m.group(2))
             lower, upper = nominal - lo, nominal + up
         else:
-            m = re.search(r"0\s*/?\s*[-−]\s*(\d+(?:\.\d+)?)", tol)
+            # 单边：0/-x 或 0 -x  → 上限=nominal
+            m = re.search(r"0\s*/?\s*[-−]\s*(\d*\.?\d+)", tol)
             if m:
                 lower, upper = nominal - float(m.group(1)), nominal
+            else:
+                # 单边：+x/0 或 +x 0 → 下限=nominal
+                m = re.search(r"\+\s*(\d*\.?\d+)\s*/?\s*0\b", tol)
+                if m:
+                    lower, upper = nominal, nominal + float(m.group(1))
 
     if lower is not None:
         lower, upper = round(lower, 4), round(upper, 4)
@@ -384,19 +412,74 @@ class VisionMerger:
                     tile_views.append(cv)
         sole_view = tile_views[0] if len(tile_views) == 1 else None
 
+        # 水印/签名行特征模式：匹配 PDF 页面底部的审核水印文字
+        WATERMARK_PATTERNS = (
+            re.compile(r"CUS0[12]", re.IGNORECASE),
+            re.compile(r"pass\.nor", re.IGNORECASE),
+            re.compile(r"\b\d{6,8}\b.*\d{2}:\d{2}"),   # 日期时间戳如 "13:23:36"
+            re.compile(r"\bDate\s*:", re.IGNORECASE),
+            re.compile(r"\bTime\s*:", re.IGNORECASE),
+            re.compile(r"[a-z]{5,8},[0-9]{8},"),             # "xpzrro,12162024,..."
+        )
+
         for el in result.get("elements", []):
             el = dict(el)
             etype = el.get("type", "")
+            raw_val = str(el.get("value", "") or "")
+            raw_txt = str(el.get("raw", "") or "")
+
+            # ── 过滤水印行（问题B）──────────────────────────────────────
+            # 水印文字出现在 value 或 raw 中则跳过
+            combined = raw_val + " " + raw_txt
+            if any(p.search(combined) for p in WATERMARK_PATTERNS):
+                continue
+
             el["tolerance"] = normalize_tolerance(el.get("tolerance", ""))
             el["raw"] = normalize_tolerance(el.get("raw", ""))
             view = clean_view_name(el.get("belongs_to_view", "")) or ""
             conf = (el.get("view_confidence", "") or "").lower()
+
+            # ── deviation_override 跨块兜底（问题A）────────────────────
+            # 若 AI 漏打标签，但 belongs_to_view 明确是 DEVIATION_TABLE，强制修正类型
+            if view == "DEVIATION_TABLE" and etype == "dimension":
+                etype = "deviation_override"
+                el["type"] = "deviation_override"
+
             if not view and sole_view:
                 view = sole_view
                 conf = conf or "low"
             el["belongs_to_view"] = view
             el["view_confidence"] = conf if conf in ("high", "medium", "low") else ""
             el["_tile"] = tile_id
+            el["_page"] = tile.get("page", 1)
+            # ── bbox：归一化(0~1000，相对本块) → 整页像素坐标 ──
+            bb = el.get("bbox")
+            el["_bbox_px"] = None
+            if isinstance(bb, (list, tuple)) and len(bb) == 4:
+                try:
+                    x0n, y0n, x1n, y1n = [float(v) for v in bb]
+                    # tw/th：模型实际看到的图像尺寸（含白边）—— bbox 归一化基准
+                    tw = tile.get("w_px", 0) or 0
+                    th = tile.get("h_px", 0) or 0
+                    tx = tile.get("x0_px", 0)
+                    ty = tile.get("y0_px", 0)
+                    # 页面实际内容边界（不超过页面），用于防止坐标溢出
+                    cw = tile.get("content_w_px", tw) or tw
+                    ch = tile.get("content_h_px", th) or th
+                    if tw and th:
+                        X0 = tx + x0n / 1000.0 * tw
+                        Y0 = ty + y0n / 1000.0 * th
+                        X1 = tx + x1n / 1000.0 * tw
+                        Y1 = ty + y1n / 1000.0 * th
+                        # 限制在本块实际内容范围内，避免落在页面外白边区域
+                        X0 = max(float(tx), min(X0, tx + cw))
+                        X1 = max(float(tx), min(X1, tx + cw))
+                        Y0 = max(float(ty), min(Y0, ty + ch))
+                        Y1 = max(float(ty), min(Y1, ty + ch))
+                        el["_bbox_px"] = (round(min(X0, X1), 1), round(min(Y0, Y1), 1),
+                                          round(max(X0, X1), 1), round(max(Y0, Y1), 1))
+                except (ValueError, TypeError):
+                    el["_bbox_px"] = None
             el["dim_no"] = str(el.get("dim_no", "") or "").strip()
             el["is_ref"] = bool(el.get("is_ref", False)) or \
                 ("REF" in el["raw"].upper() or el["raw"].strip().startswith("("))
@@ -410,6 +493,13 @@ class VisionMerger:
             elif etype == "angle":
                 el["lower"] = None
                 el["upper"] = None
+            elif etype == "deviation_override":
+                el["belongs_to_view"] = "DEVIATION_TABLE"
+                # Fix7: 解析偏差后规格的非对称公差，而非一律置 None
+                calc = parse_dimension(el.get("value", ""),
+                                       el.get("tolerance", ""), el.get("raw", ""))
+                el["lower"] = calc["lower"]
+                el["upper"] = calc["upper"]
             self.elements.append(el)
 
     def dedup(self):
@@ -420,11 +510,160 @@ class VisionMerger:
                    el.get("belongs_to_view", ""))
             if key not in seen:
                 seen[key] = el
+            else:
+                # 优先保留有 bbox 坐标的版本（同一元素可能被多个重叠块识别到）
+                existing = seen[key]
+                has_new = bool(el.get("_bbox_px"))
+                has_old = bool(existing.get("_bbox_px"))
+                if has_new and not has_old:
+                    seen[key] = el
+                elif has_new and has_old:
+                    # 两者都有坐标时，保留有 dim_no 的版本
+                    if el.get("dim_no") and not existing.get("dim_no"):
+                        seen[key] = el
         self.elements = list(seen.values())
         return self
 
     def by_type(self, t):
         return [e for e in self.elements if e.get("type") == t]
+
+
+# ═════════════════════════════════════════════
+# 3b. 元素框选标注（在整页图上把每个识别元素框出来）
+# ═════════════════════════════════════════════
+
+# 类型 → 颜色（RGB）
+ELEMENT_COLORS = {
+    "dimension": (220, 38, 38),         # 红
+    "gdt": (37, 99, 235),               # 蓝
+    "angle": (22, 163, 74),             # 绿
+    "surface_roughness": (234, 88, 12), # 橙
+    "datum_feature": (147, 51, 234),    # 紫
+    "datum_label": (147, 51, 234),
+    "thread": (202, 138, 4),            # 暗黄
+    "chamfer": (8, 145, 178),           # 青
+    "radius": (190, 24, 93),            # 玫红
+    "note": (100, 116, 139),            # 灰
+    "deviation_override": (192, 38, 211),  # 品红
+}
+DEFAULT_COLOR = (15, 23, 42)
+
+
+class Annotator:
+    """把识别到的每个元素在整页图纸上框出来，按类型上色并标注编号/类型。
+    输出每页一张 PNG。需要元素带 _page 与 _bbox_px（整页像素坐标）。
+    """
+
+    def __init__(self, pdf_path, page_dims):
+        self.pdf_path = pdf_path
+        self.page_dims = page_dims or {}
+
+    def annotate(self, elements, output_dir, stem):
+        from PIL import Image, ImageDraw, ImageFont
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", 14)
+            font_sm = ImageFont.truetype("DejaVuSans.ttf", 11)
+        except Exception:
+            font = ImageFont.load_default()
+            font_sm = font
+
+        # 按页分组（仅保留有 bbox 的元素）
+        by_page = {}
+        for el in elements:
+            if not el.get("_bbox_px"):
+                continue
+            by_page.setdefault(el.get("_page", 1), []).append(el)
+
+        doc = fitz.open(self.pdf_path)
+        outputs = []
+        # 确保每页都输出，即使该页元素全无 bbox（便于用户确认问题）
+        for pno, page in enumerate(doc, start=1):
+            geo = self.page_dims.get(pno)
+            if geo is None:
+                # 该页在渲染阶段被跳过（空白页），仍然生成基本标注图
+                scale = 1.0
+            else:
+                scale = geo["scale"]
+            pm = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+            img = Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
+            # 半透明叠加层，避免边框遮挡图纸
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay, "RGBA")
+
+            # 整页像素边界
+            page_w, page_h = img.size
+            els = by_page.get(pno, [])
+            counts = {}
+            for el in els:
+                x0, y0, x1, y1 = el["_bbox_px"]
+                # 裁剪到页面范围内
+                x0 = max(0.0, min(x0, page_w - 1))
+                y0 = max(0.0, min(y0, page_h - 1))
+                x1 = max(0.0, min(x1, page_w - 1))
+                y1 = max(0.0, min(y1, page_h - 1))
+                # 保证最小框尺寸（避免退化为点/线）
+                MIN_SIZE = 8
+                if x1 - x0 < MIN_SIZE:
+                    cx = (x0 + x1) / 2
+                    x0, x1 = cx - MIN_SIZE / 2, cx + MIN_SIZE / 2
+                if y1 - y0 < MIN_SIZE:
+                    cy = (y0 + y1) / 2
+                    y0, y1 = cy - MIN_SIZE / 2, cy + MIN_SIZE / 2
+                etype = el.get("type", "")
+                color = ELEMENT_COLORS.get(etype, DEFAULT_COLOR)
+                counts[etype] = counts.get(etype, 0) + 1
+                # 框（线宽随图纸分辨率自适应，最小2px）
+                lw = max(2, int(page_w / 3000))
+                draw.rectangle([x0, y0, x1, y1], outline=color + (255,), width=lw)
+                # 标签：气泡编号优先，否则类型缩写
+                label = str(el.get("dim_no") or "").strip()
+                if not label:
+                    label = {"dimension": "D", "gdt": "G", "angle": "∠",
+                             "surface_roughness": "Ra", "datum_feature": "DF",
+                             "deviation_override": "Δ", "note": "N"}.get(etype, "·")
+                # 标签底色块
+                tb = draw.textbbox((0, 0), label, font=font_sm)
+                tw, thh = tb[2] - tb[0], tb[3] - tb[1]
+                lx, ly = x0, max(0, y0 - thh - 4)
+                draw.rectangle([lx, ly, lx + tw + 6, ly + thh + 4],
+                               fill=color + (235,))
+                draw.text((lx + 3, ly + 2), label, fill=(255, 255, 255, 255),
+                          font=font_sm)
+
+            # 图例
+            self._draw_legend(draw, counts, font, img.size)
+
+            out_img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            suffix = f"_标注_P{pno}.png" if doc.page_count > 1 else "_标注.png"
+            out_path = str(Path(output_dir) / f"{stem}{suffix}")
+            out_img.save(out_path)
+            outputs.append(out_path)
+        doc.close()
+        return outputs
+
+    @staticmethod
+    def _draw_legend(draw, counts, font, size):
+        if not counts:
+            return
+        items = [(t, n) for t, n in counts.items()]
+        pad = 10
+        line_h = 22
+        box_w = 240
+        box_h = pad * 2 + line_h * (len(items) + 1)
+        x0 = 10
+        y0 = 10
+        draw.rectangle([x0, y0, x0 + box_w, y0 + box_h],
+                       fill=(255, 255, 255, 230), outline=(0, 0, 0, 255))
+        draw.text((x0 + pad, y0 + pad), "Detected elements / count",
+                  fill=(0, 0, 0, 255), font=font)
+        yy = y0 + pad + line_h
+        for t, n in items:
+            color = ELEMENT_COLORS.get(t, DEFAULT_COLOR)
+            draw.rectangle([x0 + pad, yy + 3, x0 + pad + 14, yy + 17],
+                           fill=color + (255,), outline=(0, 0, 0, 255))
+            draw.text((x0 + pad + 22, yy + 2), f"{t}: {n}", fill=(0, 0, 0, 255),
+                      font=font)
+            yy += line_h
 
 
 # ═════════════════════════════════════════════
@@ -652,7 +891,7 @@ class VisionExcelExporter(ExcelExporter):
 # ═════════════════════════════════════════════
 
 def process_with_vision(pdf_path, output_dir=".", model="qwen-vl-max",
-                        dpi=100, max_tiles=36, mock=False):
+                        dpi=100, max_tiles=36, mock=False, annotate=True):
     pdf_path = str(pdf_path)
     stem = Path(pdf_path).stem
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -704,11 +943,30 @@ def process_with_vision(pdf_path, output_dir=".", model="qwen-vl-max",
     print("[5/5] 生成增强 Excel...")
     VisionExcelExporter(extractor, merger, out, model).export()
     print(f"完成 → {out}")
+
+    annotated = []
+    if annotate:
+        print("[+] 生成元素框选标注图...")
+        try:
+            annotated = Annotator(pdf_path, renderer.page_dims).annotate(
+                merger.elements, output_dir, stem)
+            n_box = sum(1 for e in merger.elements if e.get("_bbox_px"))
+            print(f"      → 标注 {n_box}/{len(merger.elements)} 个带坐标的元素，"
+                  f"输出 {len(annotated)} 张图")
+            for p in annotated:
+                print(f"        {p}")
+            if n_box == 0:
+                print("      ⚠ 模型未返回任何 bbox 坐标，标注图为空框。"
+                      "请确认模型支持视觉定位(grounding)。")
+        except Exception as e:
+            print(f"      ! 标注生成失败: {e}")
+
     return {
         "output": out,
         "tiles": len(tiles),
         "elements": len(merger.elements),
         "views": sorted(merger.views),
+        "annotated": annotated,
     }
 
 
@@ -725,6 +983,8 @@ def main():
                     help="并发线程数 (默认6)")
     ap.add_argument("--mock", action="store_true",
                     help="模拟模式，无需密钥，验证流程")
+    ap.add_argument("--no-annotate", action="store_true",
+                    help="不生成元素框选标注图")
     args = ap.parse_args()
 
     if not args.mock and not os.environ.get("DASHSCOPE_API_KEY"):
@@ -739,6 +999,7 @@ def main():
         args.pdf, args.output_dir,
         model=args.model, dpi=args.dpi,
         max_tiles=args.max_tiles, mock=args.mock,
+        annotate=not args.no_annotate,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

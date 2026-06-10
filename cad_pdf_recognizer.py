@@ -287,22 +287,69 @@ class CADInfoExtractor:
 
     # ── 偏差清单 ─────────────────────────────
     def _deviations(self):
-        idx = self.t.find("DEVIATION LIST")
-        if idx < 0:
-            return
-        block = self.t[idx:idx + 3000]
-        pattern = re.compile(r"(\d+)#\s*[\n ]\s*([\d.]+(?:\+/-[\d.]+)?)\s*[\n ]\s*([\d.+/\-]+(?:\s*TBT)?)")
+        """解析两种偏差表格式：
+        格式1 (旧)：DEVIATION LIST  —  "39# 6.4+/-0.02  6.3+/-0.02"
+        格式2 (新)：DEVIATION TABLE —  "DIM NO. DEVIATION ACCEPTABLE"
+                    行格式 "39 6.30+0.02/-0.04" 或 "85 0.15 A B C" 或 "10 Rz15-30"
+        """
         seen = set()
-        for m in pattern.finditer(block):
-            key = m.group(0)
-            if key in seen:
-                continue
-            seen.add(key)
-            self.r["偏差清单"].append({
-                "尺寸编号": m.group(1) + "#",
-                "原规格": m.group(2).replace("+/-", "±"),
-                "偏差后": m.group(3).replace("+/-", "±").strip(),
-            })
+
+        # ── 格式1: DEVIATION LIST ──────────────────────────────────────
+        idx1 = self.t.find("DEVIATION LIST")
+        if idx1 >= 0:
+            block = self.t[idx1:idx1 + 3000]
+            pattern = re.compile(
+                r"(\d+)#\s*[\n ]\s*([\d.]+(?:\+/-[\d.]+)?)\s*[\n ]\s*([\d.+/\-]+(?:\s*TBT)?)")
+            for m in pattern.finditer(block):
+                key = m.group(0)
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.r["偏差清单"].append({
+                    "尺寸编号": m.group(1) + "#",
+                    "原规格": m.group(2).replace("+/-", "±"),
+                    "偏差后": m.group(3).replace("+/-", "±").strip(),
+                })
+
+        # ── 格式2: DEVIATION TABLE (R03+ 样式) ────────────────────────
+        for marker in ("DEVIATION TABLE", "DIM NO. DEVIATION", "DIM NO."):
+            idx2 = self.t.find(marker)
+            if idx2 >= 0:
+                break
+        else:
+            idx2 = -1
+
+        if idx2 >= 0:
+            block2 = self.t[idx2:idx2 + 4000]
+            # dim_no 必须是纯整数（排除 "5.5"、"453021" 等非编号数字）
+            # 偏差规格：贪婪匹配到行尾（含基准字母、Rz、ALLOWED WARPAGE 等）
+            pat2 = re.compile(
+                r"^[ \t]*(\d{1,4})[ \t]+"            # dim_no: 1~4位整数
+                r"(.+?)[ \t]*$",                         # spec: 贪婪到行尾
+                re.MULTILINE,
+            )
+            for m in pat2.finditer(block2):
+                dim_no = m.group(1)
+                spec = m.group(2).strip().replace("+/-", "±")
+                # 排除纯大写关键词行（FOR、TOOL、WARPAGE、NO、DIM 等）
+                if re.fullmatch(r"[A-Z ]+", spec):
+                    continue
+                # 排除表头行（含 DEVIATION、ACCEPTABLE、TOOL）
+                if any(kw in spec.upper() for kw in
+                       ("DEVIATION", "ACCEPTABLE", "TOOL NO", "WARPAGE ALLOWED",
+                        "ALLOWED WARPAGE")):
+                    # 但保留 "0.35 ALLOWED WARPAGE -0.20" 这种带数值的行
+                    if not re.search(r"\d", spec[:6]):
+                        continue
+                key = f"TABLE:{dim_no}:{spec}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.r["偏差清单"].append({
+                    "尺寸编号": dim_no + "#",
+                    "原规格": "",
+                    "偏差后": spec,
+                })
 
     # ── 尺寸标注（合并标注值+公差，识别*号受控尺寸） ──
     def _dimensions(self):
