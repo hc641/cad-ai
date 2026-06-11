@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CAD 图纸 OCR 识别</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
     <script>
@@ -96,13 +97,37 @@
             <span class="font-semibold text-slate-800 tracking-tight">CAD 图纸 OCR 识别</span>
         </div>
         <div class="flex items-center gap-1">
-            <a href="#" class="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors">历史记录</a>
+            <a href="#" onclick="event.preventDefault();openHistory()" class="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors"><i class="fa-solid fa-clock-rotate-left mr-1.5 text-xs"></i>历史记录</a>
         </div>
     </div>
 </nav>
 
 <!-- ══ Toast 容器 ══ -->
 <div id="toast-container"></div>
+
+<!-- ══ 历史记录抽屉 ══ -->
+<div id="history-backdrop" class="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm hidden" onclick="closeHistory()"></div>
+<div id="history-drawer" class="fixed top-0 right-0 z-50 h-full w-full max-w-md bg-white shadow-2xl flex flex-col translate-x-full transition-transform duration-300 ease-out">
+    <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center text-primary-600">
+                <i class="fa-solid fa-clock-rotate-left text-sm"></i>
+            </div>
+            <h2 class="font-semibold text-slate-800">历史记录</h2>
+        </div>
+        <button onclick="closeHistory()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+    </div>
+    <div id="history-list" class="flex-1 overflow-y-auto px-4 py-4 space-y-2">
+        <div class="flex items-center justify-center h-24 text-slate-400 text-sm">
+            <i class="fa-solid fa-circle-notch fa-spin mr-2"></i>加载中…
+        </div>
+    </div>
+    <div class="px-6 py-4 border-t border-slate-100 shrink-0 text-xs text-slate-400 text-center">
+        点击记录载入为图纸 A 或 B，可直接用于比对
+    </div>
+</div>
 
 <!-- ══ 主内容 ══ -->
 <main class="max-w-6xl mx-auto px-6 py-10">
@@ -197,7 +222,7 @@
                     </div>
                     <div class="flex items-center gap-2">
                         <button onclick="downloadSingleResult()" class="btn-outline inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-slate-600">
-                            <i class="fa-solid fa-download text-xs"></i>下载 PPAP
+                            <i class="fa-solid fa-download text-xs"></i>下载完整报告
                         </button>
                         <button onclick="useForCompare()" class="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-white">
                             <i class="fa-solid fa-code-compare text-xs"></i>用于比对
@@ -594,7 +619,7 @@
                         </div>
                         <!-- 导出 -->
                         <button onclick="exportSmartCSV()" class="btn-outline inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600">
-                            <i class="fa-solid fa-file-excel text-xs"></i>导出 PPAP
+                            <i class="fa-solid fa-file-excel text-xs"></i>导出完整报告
                         </button>
                     </div>
                 </div>
@@ -961,21 +986,25 @@ function cmpAvDownload() {
 async function downloadSingleResult() {
     if (!singleResultPath) { toast('无可下载结果', 'warn'); return; }
     try {
-        // 以单图识别结果作为 path_a/path_b 相同路径调用 smart_csv 接口，
-        // 生成含 PPAP 主表的标准格式 xlsx 并直接触发下载
+        toast('正在生成完整报告…', 'info');
+        const cavities = parseInt(document.getElementById('cavities-input')?.value || '4', 10) || 4;
         const res = await fetch('/api/compare/smart_csv', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path_a: singleResultPath, path_b: singleResultPath, cavities: 4 })
+            body: JSON.stringify({ path_a: singleResultPath, path_b: singleResultPath, cavities }),
         });
-        if (!res.ok) { const e = await res.json(); throw new Error(e.error || '下载失败'); }
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || res.statusText);
+        }
         const blob = await res.blob();
+        const base = singleFile ? singleFile.name.replace(/\.pdf$/i, '') : 'result';
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        const base = singleFile ? singleFile.name.replace(/\.pdf$/i, '') : 'result';
-        a.download = base + '_PPAP.xlsx';
+        a.download = base + '_完整报告.xlsx';
         a.click();
-        toast('PPAP 报告已下载', 'success');
+        URL.revokeObjectURL(a.href);
+        toast('完整报告已下载', 'success');
     } catch(e) { toast('下载失败：' + e.message, 'error'); }
 }
 
@@ -992,6 +1021,24 @@ function useForCompare() {
 // ══════════════════════════════════════════════
 // 比对模式
 // ══════════════════════════════════════════════
+// ── 单图区拖拽（DOMContentLoaded） ──
+document.addEventListener('DOMContentLoaded', () => {
+    const zs = document.getElementById('zone-single');
+    if (zs) {
+        zs.addEventListener('dragover', e => { e.preventDefault(); zs.classList.add('drag-over'); });
+        zs.addEventListener('dragleave', () => zs.classList.remove('drag-over'));
+        zs.addEventListener('drop', e => {
+            e.preventDefault(); zs.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) {
+                const dt = new DataTransfer();
+                dt.items.add(e.dataTransfer.files[0]);
+                document.getElementById('file-single').files = dt.files;
+                handleSingleFile(document.getElementById('file-single'));
+            }
+        });
+    }
+});
+
 ['a', 'b'].forEach(side => {
     // 拖拽
     const zoneEl = () => document.getElementById('zone-' + side);
@@ -1007,6 +1054,22 @@ function useForCompare() {
 
 // 补充拖拽（DOMContentLoaded 可能已过）
 setTimeout(() => {
+    // ── 单图区拖拽 ──
+    const zoneSingle = document.getElementById('zone-single');
+    if (zoneSingle) {
+        zoneSingle.addEventListener('dragover', e => { e.preventDefault(); zoneSingle.classList.add('drag-over'); });
+        zoneSingle.addEventListener('dragleave', () => zoneSingle.classList.remove('drag-over'));
+        zoneSingle.addEventListener('drop', e => {
+            e.preventDefault(); zoneSingle.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) {
+                const dt = new DataTransfer();
+                dt.items.add(e.dataTransfer.files[0]);
+                document.getElementById('file-single').files = dt.files;
+                handleSingleFile(document.getElementById('file-single'));
+            }
+        });
+    }
+    // ── 比对区拖拽 ──
     ['a','b'].forEach(side => {
         const zone = document.getElementById('zone-' + side);
         if (!zone) return;
@@ -1367,24 +1430,65 @@ function toggleGroup(header) {
 }
 
 // ══════════════════════════════════════════════
-// 导出 PPAP（替代原 CSV）
+// 导出 PPAP（仅提取检验报告表 sheet，不添加额外内容）
 // ══════════════════════════════════════════════
 async function exportSmartCSV() {
-    if (!compareResultPaths.a || !compareResultPaths.b) { toast('暂无比对数据', 'warn'); return; }
+    if (!compareResultPaths.a && !compareResultPaths.b) { toast('暂无比对数据', 'warn'); return; }
+    const pathA = compareResultPaths.a || compareResultPaths.b;
+    const pathB = compareResultPaths.b || compareResultPaths.a;
+    const cavities = parseInt(document.getElementById('cavities-input')?.value || '4', 10) || 4;
     try {
+        toast('正在生成完整报告…', 'info');
         const res = await fetch('/api/compare/smart_csv', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path_a: compareResultPaths.a, path_b: compareResultPaths.b, cavities: 4 })
+            body: JSON.stringify({ path_a: pathA, path_b: pathB, cavities }),
         });
-        if (!res.ok) { const e = await res.json(); throw new Error(e.error || '导出失败'); }
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || res.statusText);
+        }
         const blob = await res.blob();
+        const filename = 'PPAP_完整_' + dateStr() + '.xlsx';
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = 'PPAP_diff_' + dateStr() + '.xlsx';
+        a.download = filename;
         a.click();
-        toast('PPAP 报告已下载', 'success');
+        URL.revokeObjectURL(a.href);
+        toast('完整报告已下载', 'success');
     } catch(e) { toast('导出失败：' + e.message, 'error'); }
+}
+
+/**
+ * 从识别结果 xlsx 中提取"📋 检验报告表"sheet，
+ * 原样另存为新 xlsx 文件并触发下载，不添加任何额外内容。
+ */
+async function exportPpapSheetOnly(xlsxPath, downloadName) {
+    // 1. 从后端取原始识别结果 xlsx（二进制）
+    const res = await fetch('/api/annotated?path=' + encodeURIComponent(xlsxPath));
+    if (!res.ok) throw new Error('无法读取识别结果文件');
+    const arrayBuf = await res.arrayBuffer();
+
+    // 2. 用 SheetJS 解析，找到检验报告表 sheet
+    const wb = XLSX.read(arrayBuf, { type: 'array' });
+    const PPAP_SHEET = '📋 检验报告表';
+    if (!wb.SheetNames.includes(PPAP_SHEET)) {
+        throw new Error(`识别结果中未找到"${PPAP_SHEET}"工作表`);
+    }
+
+    // 3. 新建只含该 sheet 的工作簿，原样写入（保留数值/格式）
+    const newWb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(newWb, wb.Sheets[PPAP_SHEET], PPAP_SHEET);
+
+    // 4. 生成并下载
+    const out = XLSX.write(newWb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = downloadName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('PPAP 报告已下载', 'success');
 }
 
 // ══════════════════════════════════════════════
@@ -1403,6 +1507,129 @@ function escapeHtml(text) {
     return d.innerHTML;
 }
 var esc = escapeHtml;
+
+// ══════════════════════════════════════════════
+// 历史记录抽屉
+// ══════════════════════════════════════════════
+function openHistory() {
+    document.getElementById('history-backdrop').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() =>
+        document.getElementById('history-drawer').classList.remove('translate-x-full'));
+    loadHistory();
+}
+
+function closeHistory() {
+    document.getElementById('history-drawer').classList.add('translate-x-full');
+    document.getElementById('history-backdrop').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+async function loadHistory() {
+    const list = document.getElementById('history-list');
+    list.innerHTML = '<div class="flex items-center justify-center h-24 text-slate-400 text-sm"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i>加载中…</div>';
+    try {
+        const data = await fetch('/api/history').then(r => r.json());
+        const records = data.records || [];
+        if (!records.length) {
+            list.innerHTML = '<div class="flex flex-col items-center justify-center h-32 text-slate-400 gap-3"><i class="fa-solid fa-box-open text-2xl"></i><p class="text-sm">暂无历史记录</p></div>';
+            return;
+        }
+        list.innerHTML = records.map(rec => {
+            const recJson = esc(JSON.stringify(rec));
+            return `<div class="group bg-slate-50 hover:bg-primary-50 rounded-xl p-4 border border-transparent hover:border-primary-100 transition-all">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-9 h-9 rounded-lg bg-white border border-slate-200 group-hover:border-primary-200 flex items-center justify-center shrink-0 transition-colors">
+                            <i class="fa-solid fa-file-excel text-emerald-500 text-sm"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="text-sm font-medium text-slate-800 truncate">${esc(rec.name)}</p>
+                            <p class="text-xs text-slate-400 mt-0.5">${esc(rec.mtime)}&nbsp;&middot;&nbsp;${fmtSize(rec.size)}</p>
+                        </div>
+                    </div>
+                    <div class="flex gap-1.5 shrink-0">
+                        <button title="查看识别结果"
+                            onclick="viewHistory(${recJson})"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"><i class="fa-solid fa-eye text-[10px] mr-0.5"></i>查看</button>
+                        <button title="下载报告"
+                            onclick="downloadHistory(${recJson})"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-500 text-white hover:bg-slate-600 transition-colors"><i class="fa-solid fa-download text-[10px]"></i></button>
+                        <button title="载入为图纸 A"
+                            onclick="useHistoryAs(${recJson},'a')"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-primary-600 text-white hover:bg-primary-700 transition-colors">A</button>
+                        <button title="载入为图纸 B"
+                            onclick="useHistoryAs(${recJson},'b')"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors">B</button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch(e) {
+        list.innerHTML = `<div class="flex flex-col items-center justify-center h-32 text-rose-400 gap-3"><i class="fa-solid fa-triangle-exclamation text-2xl"></i><p class="text-sm">加载失败：${esc(e.message)}</p></div>`;
+    }
+}
+
+// 查看历史识别结果：切换到单图模式，展示结果面板
+function viewHistory(rec) {
+    closeHistory();
+    switchMode('single');
+
+    // 设置文件信息（模拟已上传状态）
+    singleFile = { name: rec.name, size: rec.size };
+    singleResultPath = rec.path;
+
+    // 更新上传区 UI 为已选中状态
+    document.getElementById('zone-single').classList.add('filled');
+    document.getElementById('placeholder-single').classList.add('hidden');
+    document.getElementById('info-single').classList.remove('hidden');
+    document.getElementById('remove-single').classList.remove('hidden');
+    document.getElementById('single-badge').classList.remove('hidden');
+    document.getElementById('single-name').textContent = rec.name;
+    document.getElementById('single-size').textContent = fmtSize(rec.size);
+    document.getElementById('btn-single').disabled = true;
+
+    // 展示结果面板
+    document.getElementById('single-progress').classList.add('hidden');
+    document.getElementById('single-result').classList.remove('hidden');
+    document.getElementById('single-result-name').textContent = rec.name;
+    document.getElementById('sr-views').textContent = '—';
+    document.getElementById('sr-elements').textContent = '—';
+    document.getElementById('sr-path').textContent = rec.path;
+
+    // 尝试加载标注图（如果存在同目录下的标注PNG）
+    const dir = rec.path.replace(/[/\\][^/\\]+$/, '');
+    const stem = rec.name.replace(/_\d{8}_\d{6}$/, '');
+    avPages = [];
+    avCurrent = 0;
+    // 检查标注图是否存在
+    fetch('/api/annotated?path=' + encodeURIComponent(dir + '/' + rec.name.replace(/\.xlsx$/i, '') + '_标注.png'))
+        .then(r => { if (r.ok) { avPages = [dir + '/' + rec.name.replace(/\.xlsx$/i, '') + '_标注.png']; avShow(); } })
+        .catch(() => {});
+
+    toast('已加载历史记录：' + rec.name, 'success');
+}
+
+// 直接下载历史记录的 Excel 文件
+function downloadHistory(rec) {
+    const a = document.createElement('a');
+    a.href = '/api/download?path=' + encodeURIComponent(rec.path);
+    a.download = rec.name.replace(/^.*[\/\\]/, '') || 'result.xlsx';
+    a.click();
+    toast('开始下载…', 'info');
+}
+
+function useHistoryAs(rec, side) {
+    // compareFiles[side] 需要有 name/size 供 checkCompareReady 判断就绪
+    compareFiles[side] = { name: rec.name, size: rec.size };
+    // compareResultPaths[side] 直接设为已有 xlsx 路径，跳过重新识别
+    compareResultPaths[side] = rec.path;
+    switchMode('compare');
+    setCompareFileUI(side, { name: rec.name, size: rec.size });
+    checkCompareReady();
+    closeHistory();
+    toast(`已载入"${rec.name}" → 图纸 ${side.toUpperCase()}`, 'success');
+}
 </script>
 </body>
 </html>

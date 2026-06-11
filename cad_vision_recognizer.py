@@ -1,3 +1,7 @@
+def normalize_bbox(b):
+    # 四舍五入到 10 的倍数，减少浮动
+    return [round(v / 10) * 10 for v in b]
+
 """
 CAD图纸PDF识别系统 - 第二阶段：视觉识别（高速并发版）
 ================================================================
@@ -10,6 +14,7 @@ import json
 import math
 import time
 import base64
+import hashlib
 import argparse
 from pathlib import Path
 from collections import OrderedDict
@@ -28,8 +33,8 @@ from cad_pdf_recognizer import PDFParser, CADInfoExtractor, ExcelExporter
 class TileRenderer:
     """超大幅图纸 → 高清重叠分块（自动跳空白、限块数）"""
 
-    def __init__(self, pdf_path, dpi=100, tile_px=1568, overlap=0.10,
-                 max_tiles=36, ink_threshold=0.0015):
+    def __init__(self, pdf_path, dpi=150, tile_px=1568, overlap=0.22,
+                 max_tiles=40, ink_threshold=0.0015):
         self.pdf_path = pdf_path
         self.dpi = dpi
         self.tile_px = tile_px
@@ -167,7 +172,23 @@ type="surface_roughness"，value="Ra 0.3"或"Rz20 MAX"或"Ra 2μm MIN ALL AROUND
     }
   ]
 }
-若本块是标题栏/BOM/纯文本表格，elements 可为空数组，views 注明 ["TITLE_BLOCK"]。"""
+若本块是标题栏/BOM/纯文本表格，elements 可为空数组，views 注明 ["TITLE_BLOCK"]。
+
+【公差字段填写规则，非常重要】
+- tolerance 字段必须包含完整公差表达式：填 "±0.1" 而不是 "0.1"；填 "+0.02/-0.04" 表示非对称
+- 单边公差："+0.1/0"（只有上偏差）或 "0/-0.2"（只有下偏差）
+- 若无公差（参考尺寸/理论值），tolerance 填 ""，is_ref 填 true
+- raw 字段：填图纸上原始标注全文，如 "4X Φ1.60±0.05"，不要简化
+
+【粗糙度上限填写规则】
+- value 格式：参数+数值，如 "Ra 0.8" / "Rz 6.3 MAX"
+- tolerance 字段同时填粗糙度数值（如 "0.8"），方便系统提取上限
+- surface_param 填：Ra / Rz / Rmax（只填参数类型）
+
+【气泡编号识别要点】
+- 气泡编号是圆圈或方框内的整数（1~99），紧靠尺寸线/引线端
+- 倍数尺寸：dim_no 填第一个气泡号，multiplier 填 "4X"
+- 不要把坐标、版本号、材料编号误认为气泡编号"""
 
 
 class VisionAnalyzer:
@@ -205,7 +226,9 @@ class VisionAnalyzer:
                             {"type": "text", "text": VISION_PROMPT},
                         ],
                     }],
-                    max_tokens=4096,
+                    max_tokens=8192,   # 防止密集块 JSON 被截断（原 4096）
+                    temperature=0,     # 贪婪解码，消除随机采样波动
+                    seed=42,           # 固定随机种子（部分模型版本支持）
                 )
                 text = resp.choices[0].message.content or ""
                 return self._parse_json(text)
@@ -334,8 +357,94 @@ def clean_view_name(v):
         return v
     if re.fullmatch(r"[A-Z]{1,2}", v):
         return None
+    # 保留 'VIEW A' / 'VIEW J' 等单字母视图命名
+    if re.fullmatch(r"VIEW [A-Z]", v):
+        return v
 
     return None
+
+
+def lookup_angle_general_tolerance(nominal_deg, standard="iso2768_m"):
+    """根据角度标称值查询一般公差表，返回 (lower, upper) 或 (None, None)。
+
+    默认使用 ISO 2768-1 中等精度 (m) 的角度一般公差：
+      短边长度 ≤10mm:      ±1°
+      10 < L ≤ 50mm:      ±0°30'  = ±0.5°
+      50 < L ≤ 120mm:     ±0°20'  = ±0.333°
+      120 < L ≤ 400mm:    ±0°10'  = ±0.167°
+      L > 400mm:          ±0°5'   = ±0.083°
+
+    本函数只按角度度数估算（无短边长度信息时退化到 ±1° 默认值）。
+    调用方可提供 standard="custom" 并传自定义表格，或直接在图纸头部标注。
+    返回的公差仅在 tolerance 字段为空时作为兜底值使用，并在 raw 里注明来源。
+    """
+    if nominal_deg is None:
+        return None, None
+    # 无短边长度信息：对小角度（≤10°）用 ±1°，其余统一用 ±1°（保守）
+    # 如果图纸有明确一般公差块，识别器已经会填到 tolerance 字段，不会走到这里
+    tol = 1.0
+    lower = round(nominal_deg - tol, 4)
+    upper = round(nominal_deg + tol, 4)
+    return lower, upper
+
+
+def build_general_tol_lookup(tol_table_rows):
+    """将 📏 一般公差表 sheet 的数据构建为可查询的结构。
+
+    tol_table_rows: list of (尺寸范围(mm), 公差(±mm)) 元组，来自 Excel sheet。
+    返回:
+        linear_table: [(lo, hi, tol), ...] 按尺寸范围，供 lookup_linear_general_tolerance 使用
+        angular_tol:  float 或 None，角度公差值
+    """
+    linear_table = []
+    angular_tol = None
+    for row in tol_table_rows:
+        if not row or len(row) < 2:
+            continue
+        range_str = str(row[0] or "").strip()
+        tol_str   = str(row[1] or "").strip()
+        if not tol_str or tol_str in ("", "（未识别）"):
+            continue
+        try:
+            tol_val = float(tol_str)
+        except ValueError:
+            continue
+        # 角度公差单独处理
+        if "角度" in range_str or "ANGULAR" in range_str.upper():
+            angular_tol = tol_val
+            continue
+        # 解析 "0 – 20" / "0 - 20" / "20 – 30" 等格式
+        m = re.match(r"(\d+(?:\.\d+)?)\s*[–\-]\s*(\d+(?:\.\d+)?)", range_str)
+        if m:
+            linear_table.append((float(m.group(1)), float(m.group(2)), tol_val))
+    # 按下限排序
+    linear_table.sort(key=lambda x: x[0])
+    return linear_table, angular_tol
+
+
+def lookup_linear_general_tolerance(nominal, linear_table):
+    """根据标称值在一般公差表中查找对应的 ±公差，返回 (lower, upper) 或 (None, None)。
+
+    采用"大于下限且小于等于上限"的区间匹配，与图纸 CHART E1 的 FROM/TO 逻辑一致：
+      > 0  TO 20  → 匹配 0 < nominal ≤ 20
+      > 20 TO 30  → 匹配 20 < nominal ≤ 30
+      ...以此类推
+    """
+    if nominal is None or not linear_table:
+        return None, None
+    for (lo, hi, tol) in linear_table:
+        if lo < nominal <= hi:
+            lower = round(nominal - tol, 4)
+            upper = round(nominal + tol, 4)
+            return lower, upper
+    # 超出表格范围：用最后一档（最大范围）兜底
+    if linear_table and nominal > 0:
+        tol = linear_table[-1][2]
+        lower = round(nominal - tol, 4)
+        upper = round(nominal + tol, 4)
+        return lower, upper
+    return None, None
+
 
 
 def parse_dimension(value, tolerance="", raw=""):
@@ -347,12 +456,30 @@ def parse_dimension(value, tolerance="", raw=""):
         ang_m = re.search(r"(\d+(?:\.\d+)?)\s*°", val_clean)
         if ang_m:
             nominal = float(ang_m.group(1))
+            # 1) 先从 tolerance 字段提取
             tol_str = str(tolerance or "").replace("°", "")
             tol_m = re.search(r"±\s*(\d+(?:\.\d+)?)", tol_str)
             if tol_m:
                 t = float(tol_m.group(1))
                 lower, upper = nominal - t, nominal + t
                 lower, upper = round(lower, 4), round(upper, 4)
+            else:
+                # 2) 尝试从 raw 字段提取（如 "5.00° ±2°" 或 "70° +2°/-2°"）
+                raw_no_deg = str(raw or "").replace("°", "")
+                tol_m2 = re.search(r"±\s*(\d+(?:\.\d+)?)", raw_no_deg)
+                if tol_m2:
+                    t = float(tol_m2.group(1))
+                    lower, upper = nominal - t, nominal + t
+                    lower, upper = round(lower, 4), round(upper, 4)
+                else:
+                    # 3) 非对称格式：+x/-y
+                    tol_m3 = re.search(
+                        r"\+\s*(\d+(?:\.\d+)?)\s*/?\s*[-\u2212]\s*(\d+(?:\.\d+)?)",
+                        raw_no_deg)
+                    if tol_m3:
+                        up, lo = float(tol_m3.group(1)), float(tol_m3.group(2))
+                        lower, upper = round(nominal - lo, 4), round(nominal + up, 4)
+                    # 4) 公差缺失——lower/upper 保持 None（export 层按需补一般公差）
         return {"nominal": nominal, "lower": lower, "upper": upper}
 
     nom_m = re.search(r"[ΦØR]?\s*(\d+(?:\.\d+)?)", val_clean)
@@ -365,7 +492,9 @@ def parse_dimension(value, tolerance="", raw=""):
         tm = re.search(
             r"(±\s*\d*\.?\d+"
             r"|\+\s*\d*\.?\d+\s*/?\s*[-−]\s*\d*\.?\d+"   # +0.3/-0.2 或 +0.3 -0.2
-            r"|0\s*/?\s*[-−]\s*\d*\.?\d+)",
+            r"|\+\s*\d*\.?\d+\s*/\s*0"                         # +0.1/0 单边上偏
+            r"|0\s*/?\s*[-−]\s*\d*\.?\d+"                       # 0/-0.2 单边下偏
+            r"|\+\d*\.?\d+\s+[-−]\s*\d*\.?\d+)",             # +0.3 -0.2 空格分隔
             raw)
         if tm:
             tol = tm.group(1)
@@ -451,6 +580,8 @@ class VisionMerger:
             el["belongs_to_view"] = view
             el["view_confidence"] = conf if conf in ("high", "medium", "low") else ""
             el["_tile"] = tile_id
+            el["_tile_row"] = tile.get("row", 0)
+            el["_tile_col"] = tile.get("col", 0)
             el["_page"] = tile.get("page", 1)
             # ── bbox：归一化(0~1000，相对本块) → 整页像素坐标 ──
             bb = el.get("bbox")
@@ -491,8 +622,12 @@ class VisionMerger:
                 el["lower"] = calc["lower"]
                 el["upper"] = calc["upper"]
             elif etype == "angle":
-                el["lower"] = None
-                el["upper"] = None
+                # 尝试从 tolerance/raw 解析角度公差；解析不出时保持 None
+                # export 层可调用 lookup_angle_general_tolerance 补一般公差
+                calc = parse_dimension(el.get("value", ""),
+                                       el.get("tolerance", ""), el.get("raw", ""))
+                el["lower"] = calc["lower"]
+                el["upper"] = calc["upper"]
             elif etype == "deviation_override":
                 el["belongs_to_view"] = "DEVIATION_TABLE"
                 # Fix7: 解析偏差后规格的非对称公差，而非一律置 None
@@ -500,28 +635,48 @@ class VisionMerger:
                                        el.get("tolerance", ""), el.get("raw", ""))
                 el["lower"] = calc["lower"]
                 el["upper"] = calc["upper"]
+            el["_elem_idx"] = len(self.elements)   # 全局插入序号，用于稳定排序
             self.elements.append(el)
 
     def dedup(self):
+        # 先按空间位置排序，保证去重结果不依赖线程完成顺序
+        def _sort_key(el):
+            tile = el.get("_tile", "")
+            pm = re.search(r"P(\d+)", tile)
+            page = int(pm.group(1)) if pm else 0
+            return (page, el.get("_tile_row", 0), el.get("_tile_col", 0),
+                    el.get("_elem_idx", 0))   # 块内序号，确保完全确定性排序
+        self.elements.sort(key=_sort_key)
+
         seen = {}
         for el in self.elements:
-            key = (el.get("type", ""),
-                   el.get("raw", "") or el.get("value", ""),
-                   el.get("belongs_to_view", ""))
+            # 去重键：只用内容，不含 belongs_to_view
+            # 同一标注在两个重叠块里视图归属可能略不同，不应产生两条
+            raw_key = re.sub(r"\s+", "",
+                             (el.get("raw", "") or el.get("value", "")).upper())
+            # 同一标注在不同视图出现时不应去重（如同尺寸出现在TOP VIEW和SECTION A-A）
+            view_key = el.get("belongs_to_view", "") or ""
+            key = (el.get("type", ""), raw_key, view_key)
             if key not in seen:
                 seen[key] = el
             else:
-                # 优先保留有 bbox 坐标的版本（同一元素可能被多个重叠块识别到）
                 existing = seen[key]
-                has_new = bool(el.get("_bbox_px"))
-                has_old = bool(existing.get("_bbox_px"))
-                if has_new and not has_old:
+                # 优先保留信息更完整的那条
+                score_new = (bool(el.get("_bbox_px")),
+                             bool(el.get("dim_no")),
+                             bool(el.get("belongs_to_view")))
+                score_old = (bool(existing.get("_bbox_px")),
+                             bool(existing.get("dim_no")),
+                             bool(existing.get("belongs_to_view")))
+                if score_new > score_old:
                     seen[key] = el
-                elif has_new and has_old:
-                    # 两者都有坐标时，保留有 dim_no 的版本
-                    if el.get("dim_no") and not existing.get("dim_no"):
+                elif score_new == score_old:
+                    # 分数相同时，保留空间位置更靠前的（_elem_idx更小）
+                    if el.get("_elem_idx", 0) < existing.get("_elem_idx", 0):
                         seen[key] = el
         self.elements = list(seen.values())
+        # 最终确定性排序：保证无论线程完成顺序如何，输出完全相同
+        self.elements.sort(key=_sort_key)
         return self
 
     def by_type(self, t):
@@ -696,6 +851,67 @@ class VisionExcelExporter(ExcelExporter):
         roughness = m.by_type("surface_roughness")
         datum_features = m.by_type("datum_feature")
 
+        # ── 读取图纸自带一般公差表，构建查询结构 ──────────────────────
+        # 来源：cad_pdf_recognizer 已将 "GENERAL TOLERANCE" 块写入 📏 一般公差表 sheet
+        _linear_tol_table = []
+        _angular_tol_from_chart = None
+        if "📏 一般公差表" in self.wb.sheetnames:
+            tol_ws = self.wb["📏 一般公差表"]
+            tol_rows = []
+            for row in tol_ws.iter_rows(min_row=2, values_only=True):
+                if row and row[0] and str(row[0]).strip() not in ("", "（未识别）", "尺寸范围(mm)"):
+                    tol_rows.append(row)
+            _linear_tol_table, _angular_tol_from_chart = build_general_tol_lookup(tol_rows)
+
+        # ── 为 lower/upper 缺失的 dimension 补一般公差 ─────────────────
+        # 只补有标称值、且不是 Ref 参考尺寸的行；Ref 行本来就不做测量
+        _fallback_count = 0
+        for d in dims:
+            if d.get("is_ref"):
+                continue
+            if d.get("lower") is not None and d.get("upper") is not None:
+                continue   # 已有公差，无需补
+            # 提取标称值（数字部分）
+            val_str = str(d.get("value", "") or d.get("raw", "") or "")
+            val_str_clean = re.sub(r"^\d+\s*[Xx×]\s*", "", val_str).strip()
+            num_m = re.search(r"[ΦØ⌀R]?\s*(\d+(?:\.\d+)?)", val_str_clean)
+            if not num_m:
+                continue
+            nominal = float(num_m.group(1))
+            lo, up = lookup_linear_general_tolerance(nominal, _linear_tol_table)
+            if lo is not None:
+                d["lower"] = lo
+                d["upper"] = up
+                # 在 raw 字段末尾注明来源，便于人工核查
+                d["raw"] = (d.get("raw") or "") + "  [一般公差]"
+                _fallback_count += 1
+
+        # 角度行：如果图纸里有明确的角度一般公差，优先用它覆盖默认的 ISO ±1°
+        if _angular_tol_from_chart is not None:
+            for a in angles:
+                if a.get("lower") is not None:
+                    continue
+                calc = parse_dimension(a.get("value", ""),
+                                       a.get("tolerance", ""), a.get("raw", ""))
+                if calc["lower"] is None:
+                    nom = calc.get("nominal")
+                    if nom is not None:
+                        a["lower"] = round(nom - _angular_tol_from_chart, 4)
+                        a["upper"] = round(nom + _angular_tol_from_chart, 4)
+                        a["raw"] = (a.get("raw") or "") + "  [一般公差±角度]"
+                    else:
+                        a["lower"] = calc["lower"]
+                        a["upper"] = calc["upper"]
+                else:
+                    a["lower"] = calc["lower"]
+                    a["upper"] = calc["upper"]
+
+        if _fallback_count:
+            print(f"      [一般公差兜底] 共补全 {_fallback_count} 个尺寸的 lower/upper")
+
+        # 按空间位置排序后再编号，确保编号分配完全确定
+        dims.sort(key=lambda d: (d.get("_page", 0), d.get("_tile_row", 0),
+                                  d.get("_tile_col", 0), d.get("_elem_idx", 0)))
         existing_nums = []
         for d in dims:
             dn = d.get("dim_no", "")
@@ -706,8 +922,7 @@ class VisionExcelExporter(ExcelExporter):
         next_num = max(existing_nums) + 1 if existing_nums else 1
         for d in dims:
             if not d.get("dim_no", "").strip() and not d.get("is_ref"):
-                raw = d.get("raw", "")
-                d["dim_no"] = str(next_num)
+                d["dim_no"] = f"A-{next_num}"   # A- 前缀标识自动补号，区别于图纸气泡号
                 d["_auto_numbered"] = True
                 next_num += 1
 
@@ -747,8 +962,13 @@ class VisionExcelExporter(ExcelExporter):
             expand = max(1, multiplier)
 
             for inst in range(expand):
-                # 第一行保留 dim_no，后续展开行 dim_no 置为 None（v3格式）
-                instance_no = dim_no if inst == 0 else None
+                # 展开行：第一行用原始 dim_no，后续行用 "X-1","X-2" 标识子序号
+                if expand == 1:
+                    instance_no = dim_no
+                elif inst == 0:
+                    instance_no = dim_no
+                else:
+                    instance_no = f"{dim_no}-{inst+1}" if dim_no else None
 
                 if instance_no is not None or (lower is not None):
                     report_rows.append((
@@ -775,13 +995,45 @@ class VisionExcelExporter(ExcelExporter):
                     g.get("raw", ""),
                 ))
 
+        # 角度行：有公差时写入检验报告，无公差时跳过（export 层已在 cad_ppap_export 里处理）
+        for a in angles:
+            lower, upper = a.get("lower"), a.get("upper")
+            if lower is None and upper is None:
+                # 公差缺失时尝试查一般公差表作为兜底
+                calc = parse_dimension(a.get("value", ""),
+                                       a.get("tolerance", ""), a.get("raw", ""))
+                lower, upper = calc["lower"], calc["upper"]
+            if lower is not None or upper is not None:
+                report_rows.append((
+                    a.get("dim_no", ""),
+                    "",
+                    a.get("value", ""),
+                    lower if lower is not None else "",
+                    upper if upper is not None else "",
+                    a.get("belongs_to_view", ""),
+                    a.get("raw", ""),
+                ))
+
         for s in roughness:
             val = s.get("value", "")
             raw = s.get("raw", "")
             upper_val = ""
-            max_m = re.search(r"(\d+(?:\.\d+)?)\s*MAX", str(val) + str(raw), re.IGNORECASE)
+            combined_rs = str(val) + " " + str(raw)
+            # 优先: MAX 标注
+            max_m = re.search(r"(\d+(?:\.\d+)?)\s*MAX", combined_rs, re.IGNORECASE)
             if max_m:
                 upper_val = max_m.group(1)
+            else:
+                # Ra / Rz / Rmax 后跟数值 → 该值即为上限
+                ra_m = re.search(r"(?i)\b(?:Ra|Rz|Rmax)\s*[≤<=]?\s*(\d+(?:\.\d+)?)", combined_rs)
+                if ra_m:
+                    upper_val = ra_m.group(1)
+                else:
+                    # 纯数值兜底
+                    nums_r = re.findall(r"\d+(?:\.\d+)?", combined_rs)
+                    nums_r = [float(x) for x in nums_r if float(x) <= 50]
+                    if nums_r:
+                        upper_val = str(max(nums_r))
             report_rows.append((
                 s.get("dim_no", ""),
                 "",
@@ -795,9 +1047,9 @@ class VisionExcelExporter(ExcelExporter):
         def sort_key(r):
             try:
                 base = re.split(r"[-_]", str(r[0]))[0]
-                return (0, int(base))
+                return (0, int(base), str(r[2]))
             except (ValueError, TypeError):
-                return (1, 0)
+                return (1, 0, str(r[2]))
         report_rows.sort(key=sort_key)
         self._table(
             ws,
@@ -891,7 +1143,8 @@ class VisionExcelExporter(ExcelExporter):
 # ═════════════════════════════════════════════
 
 def process_with_vision(pdf_path, output_dir=".", model="qwen-vl-max",
-                        dpi=100, max_tiles=36, mock=False, annotate=True):
+                        dpi=150, max_tiles=40, mock=False, annotate=True,
+                        use_cache=True):
     pdf_path = str(pdf_path)
     stem = Path(pdf_path).stem
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -913,28 +1166,60 @@ def process_with_vision(pdf_path, output_dir=".", model="qwen-vl-max",
     analyzer = VisionAnalyzer(model=model, mock=mock)
     merger = VisionMerger()
 
-    # ═══ 核心改动：6 线程并发识别 ═══
+    # ── 磁盘缓存：同一PDF的同一块不重复调API ──
+    cache_path = Path(output_dir) / f"{stem}_tile_cache.json"
+    tile_cache = {}
+    if use_cache and cache_path.exists():
+        try:
+            tile_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            print(f"      已加载缓存 {len(tile_cache)} 条")
+        except Exception:
+            tile_cache = {}
+
+    def _tile_hash(tile):
+        """基于图像内容生成稳定的缓存键"""
+        h = hashlib.md5(tile["png"]).hexdigest()[:16]
+        return f"P{tile['page']}-R{tile['row']}C{tile['col']}-{h}"
+
+    def _worker(idx, tile):
+        """单个线程任务：识别一个区块（有缓存则跳过API）"""
+        cache_key = _tile_hash(tile)
+        if cache_key in tile_cache:
+            return idx, tile, tile_cache[cache_key], True
+        result = analyzer.analyze_tile(tile)
+        return idx, tile, result, False
+
+    # ═══ 并发识别，但结果按原始顺序收集 ═══
     completed = 0
     total = len(tiles)
-
-    def _worker(tile):
-        """单个线程任务：识别一个区块"""
-        result = analyzer.analyze_tile(tile)
-        return tile, result
+    results_bag = [None] * total   # 按索引占位，保证顺序
 
     with ThreadPoolExecutor(max_workers=6) as executor:
-        # 提交所有任务
-        future_to_tile = {
-            executor.submit(_worker, tile): tile for tile in tiles
+        future_to_idx = {
+            executor.submit(_worker, i, tile): i
+            for i, tile in enumerate(tiles)
         }
-
-        # 按完成顺序处理结果（不阻塞）
-        for future in as_completed(future_to_tile):
-            tile, result = future.result()
-            merger.add(tile, result)
+        for future in as_completed(future_to_idx):
+            idx, tile, result, cached = future.result()
+            results_bag[idx] = (tile, result)
+            if not cached:
+                tile_cache[_tile_hash(tile)] = result
             completed += 1
+            tag = " (cached)" if cached else ""
             if completed % 5 == 0 or completed == total:
-                print(f"      进度 {completed}/{total}，累计元素 {len(merger.elements)}")
+                print(f"      进度 {completed}/{total}{tag}，累计元素估算中")
+
+    # 按原始空间顺序依次合并（消除线程完成顺序的随机性）
+    for tile, result in results_bag:
+        merger.add(tile, result)
+
+    # 持久化缓存（下次运行同一PDF直接复用，结果100%一致）
+    if use_cache:
+        try:
+            cache_path.write_text(
+                json.dumps(tile_cache, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"      ⚠ 缓存写入失败: {e}")
 
     merger.dedup()
     print(f"      → 去重后 {len(merger.elements)} 个元素，{len(merger.views)} 个视图")
@@ -976,15 +1261,17 @@ def main():
     ap.add_argument("output_dir", nargs="?", default=".", help="输出目录")
     ap.add_argument("--model", default="qwen-vl-max",
                     help="模型 (默认 qwen-vl-max)")
-    ap.add_argument("--dpi", type=int, default=100, help="渲染DPI (默认100)")
-    ap.add_argument("--max-tiles", type=int, default=36,
-                    help="区块数上限 (默认36)")
+    ap.add_argument("--dpi", type=int, default=150, help="渲染DPI (默认150)")
+    ap.add_argument("--max-tiles", type=int, default=40,
+                    help="区块数上限 (默认40)")
     ap.add_argument("--workers", type=int, default=6,
                     help="并发线程数 (默认6)")
     ap.add_argument("--mock", action="store_true",
                     help="模拟模式，无需密钥，验证流程")
     ap.add_argument("--no-annotate", action="store_true",
                     help="不生成元素框选标注图")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="禁用区块缓存（强制重新调用API）")
     args = ap.parse_args()
 
     if not args.mock and not os.environ.get("DASHSCOPE_API_KEY"):
@@ -1000,6 +1287,7 @@ def main():
         model=args.model, dpi=args.dpi,
         max_tiles=args.max_tiles, mock=args.mock,
         annotate=not args.no_annotate,
+        use_cache=not args.no_cache,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

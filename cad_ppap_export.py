@@ -79,45 +79,170 @@ def _read_source(wb):
     if sn not in wb.sheetnames:
         return []
 
-    def _normalize_drawing(draw, raw):
+    # GD&T 原始符号 → PPAP Drawing Dimension 展示字符串
+    # 格式：符号 + 数值，如 ≡0.10、⊥0.05、⌀0.10
+    _GDT_SYMBOL_MAP = {
+        "≡": "≡",   # 平面度 Flatness
+        "⊥": "⊥",   # 垂直度 Perpendicularity
+        "∥": "∥",   # 平行度 Parallelism
+        "⌀": "⌀",   # 位置度 Position（GD&T）
+        "⊕": "⊕",   # 位置度 Position
+        "⌒": "⌒",   # 轮廓度 Profile
+        "△": "△",   # 平面度 Flatness（替代符号）
+        "○": "○",   # 圆度 Roundness
+        "◎": "◎",   # 同轴度 Concentricity
+        "⊙": "⊙",   # 同轴度 Concentricity（替代）
+        "⏥": "⏥",   # 平行度 / 平面度
+        "↗": "↗",   # 跳动 Runout
+        "↺": "↺",   # 全跳动 Total Runout
+    }
+
+    def _extract_gdt_drawing(raw_str):
         """
-        将 Drawing Dimension 规范化为官方 PPAP 模式：
-          - 去掉倍数前缀 2X / 4X / 6X / 12X 等
-          - 去掉 ± 公差部分（公差已在 Lower/Upper 列体现）
-          - 直径 Ø/Φ/⌀/D → 'D' 前缀（如 Ø4.5 → D4.5）
-          - 半径 R → 'R' 前缀（如 6X R 0.3 → R0.3）
-          - 粗糙度 Ra/Rz → 保留前缀
-          - 纯线性尺寸 → 纯数字（如 2X 1.15 → 1.15）
+        从 raw 原始标注提取 GD&T Drawing Dimension 字符串。
+        例：'≡ 0.10 F' → '≡0.10'
+            '⊥ 0.05 A' → '⊥0.05'
+            '⌀ 0.10 A B C' → '⌀0.10'
+            '⊕ 0.10 M D C M' → '⊕0.10'
+        若无法识别则返回 None（保留 SEE GD&T）。
+        """
+        s = str(raw_str).strip()
+        for sym in _GDT_SYMBOL_MAP:
+            if sym in s:
+                # 提取符号后的第一个数值（跳过空格和括号）
+                after = s[s.index(sym) + len(sym):].strip()
+                # 去掉 M D C 等基准修饰词，只取第一个数值
+                m = re.search(r"\d+(?:\.\d+)?", after)
+                if m:
+                    val = m.group(0)
+                    # 规范化为两位小数（官方格式如 0.10 而非 0.1）
+                    try:
+                        val_fmt = f"{float(val):.2f}".rstrip("0").rstrip(".")
+                        # 保持至少一位小数（如 0.10 → 0.1，但 0.05 → 0.05）
+                        if "." not in val_fmt:
+                            val_fmt = val_fmt + ".0"
+                        # 如原始有两位小数，保留两位（0.10 → 0.10）
+                        if "." in val and len(val.split(".")[1]) >= 2:
+                            val_fmt = f"{float(val):.2f}"
+                    except ValueError:
+                        val_fmt = val
+                    return _GDT_SYMBOL_MAP[sym] + val_fmt
+        return None
+
+    def _normalize_drawing(draw, raw, lower=None, upper=None):
+        """
+        规范化为官方 PPAP 符号体系，返回 (drawing_str, lower, upper)。
+
+        人工 PPAP 表约定：
+          D    → 直径 Ø/Φ/⌀/Ph/PHI/DIA （D2.46）
+          R    → 半径 R                  （R7, R0.3）
+          DEG  → 角度 °                  （DEG5, DEG70）
+          Rz   → 粗糙度 Rz               （Rz20；下限=最小粗糙度值，非0）
+          Ra   → 粗糙度 Ra               （Ra1.6；下限=0）
+          GD&T → 符号+数值（≡0.10、⊥0.05、⌀0.10 等）
+          纯数字 → 线性尺寸
         """
         if draw == "SEE GD&T":
-            return draw
-        s   = str(draw).strip()
-        src = str(raw) if raw else s
+            # 尝试从 raw 中提取 GD&T 符号，生成具体标注
+            gdt_str = _extract_gdt_drawing(raw)
+            if gdt_str:
+                return gdt_str, lower, upper
+            return draw, lower, upper
 
-        # 去掉倍数前缀（如 2X / 4X / 12X）
+        s_orig = str(draw).strip()
+        src    = str(raw) if raw else s_orig
+
+        # 去掉"粗糙度:"中文前缀
+        s = re.sub(r"^\s*粗糙度\s*[:：]\s*", "", s_orig)
+        # 去掉倍数前缀（2X / 4X / 12X）
         s = re.sub(r"^\s*\d+\s*[Xx×]\s*", "", s)
         # 去掉 ± 及之后的公差
         s = re.split(r"[±]", s)[0].strip()
 
-        is_dia    = bool(re.search(r"[ØΦ⌀]", src) or re.match(r"^D[\d.]", s))
-        is_radius = bool(re.match(r"^\s*R\b", s) or re.search(r"\bR\s*[\d.]", src))
-        is_rough  = bool(re.match(r"(?i)^(ra|rz|rmax)\b", s))
+        combined = s_orig + " " + src
 
+        # ── 类型判定 ──
+        is_angle  = bool(re.search(r"\d\s*°|\bDEG\b", combined, re.I)
+                         and "X45" not in combined.upper())
+        is_rough  = bool(re.search(r"(?i)\b(ra|rz|rmax)", combined)
+                         or s_orig.startswith("粗糙度"))
+        is_dia    = bool(re.search(r"[ØΦ⌀]", src)
+                         or re.match(r"^D[\d.]", s)
+                         or re.match(r"(?i)^(phi|dia|ph)\s*[\d.]", s))
+        is_radius = bool(re.match(r"^\s*R\s*[\d.]", s)
+                         or re.search(r"\bR\s*[\d.]", src))
+        is_chamfer = bool(re.match(r"(?i)^C\s*[\d.]", s))
+
+        # ── 角度 → DEG 前缀 ──
+        if is_angle:
+            am = re.search(r"(\d+(?:\.\d+)?)\s*°", combined)
+            if am:
+                deg = re.sub(r"\.0+$", "", am.group(1))
+                return "DEG" + deg, lower, upper
+            return s_orig, lower, upper
+
+        # ── 粗糙度 → Ra/Rz 前缀，并正确推导上下限 ──
+        if is_rough:
+            # 参数类型：优先从 s 判断，避免 raw 噪声
+            pm = re.search(r"(?i)\b(rz|rmax|ra)", s) \
+                 or re.search(r"(?i)\b(rz|rmax|ra)", combined)
+            param = {"rz": "Rz", "rmax": "Rmax", "ra": "Ra"}.get(
+                pm.group(1).lower(), "Ra") if pm else "Ra"
+
+            # 从 s（清洗后字段）提取粗糙度数值，过滤气泡编号（>50 为噪声）
+            nums = sorted([float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)
+                           if float(x) <= 50])
+
+            if not nums:
+                # s 里无数值，尝试从已有 upper 推
+                if upper is not None and str(upper).strip() not in ("", "OK"):
+                    try:
+                        nums = [float(upper)]
+                    except (ValueError, TypeError):
+                        pass
+
+            val_max = max(nums) if nums else None
+            val_min = min(nums) if nums else None
+
+            # 官方PPAP格式：Rz/Rmax → 大写无数字("RZ","RMAX")；Ra → 带数字("Ra1.6")
+            if param in ("Rz", "Rmax"):
+                draw_str = param.upper()   # → "RZ" / "RMAX"
+            else:
+                draw_str = param + (re.sub(r"\.0+$", "", str(val_max))
+                                        if val_max is not None else "")
+
+            lo, up = lower, upper
+            # Upper：若已有值则保留，否则用识别到的最大值
+            if (up is None or str(up).strip() in ("", "OK")) and val_max is not None:
+                up = val_max
+            # Lower：
+            #   Rz → 下限为粗糙度最小值（如 Rz15~30 中的 15）；若只有一个值则下限=0
+            #   Ra → 下限始终=0（Ra 是最大值指标）
+            if param == "Ra":
+                lo = 0
+            else:  # Rz / Rmax
+                if (lo is None or str(lo).strip() in ("", "OK")):
+                    lo = val_min if (val_min is not None and val_min != val_max) else 0
+
+            return draw_str, lo, up
+
+        # ── 数字提取 ──
         num_m = re.search(r"\d+\.?\d*", s)
         num   = num_m.group(0) if num_m else s
+        # 官方PPAP格式：去掉尾部 .0（D2 而非 D2.0，但保留 D2.5、D3.26）
+        num = re.sub(r"\.0+$", "", num)
 
-        if is_rough:
-            pre = re.match(r"(?i)^(ra|rz|rmax)", s)
-            return (pre.group(0) + num) if (pre and num_m) else s
         if is_dia:
-            return ("D" + num) if num_m else s
+            return ("D" + num) if num_m else s, lower, upper
         if is_radius:
-            return ("R" + num) if num_m else s
-        return num if num_m else s
+            return ("R" + num) if num_m else s, lower, upper
+        if is_chamfer:
+            return ("C" + num) if num_m else s, lower, upper
+        return (num if num_m else s), lower, upper
 
     # ── 第一遍：收集原始行，做清洗 + 跨组去重 ──
     raw_items = []
-    seen_content = set()   # (drawing, lower, upper) 已出现的内容，用于去重
+    seen_content = set()
 
     for r in wb[sn].iter_rows(min_row=2, values_only=True):
         if len(r) < 5:
@@ -130,48 +255,80 @@ def _read_source(wb):
         upper      = r[4]
         raw_orig   = str(r[6] or "").strip() if len(r) > 6 else ""
 
-        # 跳过粗糙度行
-        if draw_raw.lower().startswith("粗糙度:"):
-            continue
         # 跳过旧式 GD&T: 行
         if draw_raw.lower().startswith("gd&t:"):
             continue
 
-        is_gdt_row = (draw_raw == "SEE GD&T")
+        is_gdt_row   = (draw_raw == "SEE GD&T")
+        is_rough_row = draw_raw.startswith("粗糙度") or \
+            bool(re.search(r"(?i)\b(ra|rz|rmax)", draw_raw + " " + raw_orig))
+        is_angle_row = bool(re.search(r"\d\s*°", draw_raw + " " + raw_orig)) \
+            and "X45" not in (draw_raw + raw_orig).upper()
 
-        if not is_gdt_row:
-            # 跳过角度标注行：drawing 或 raw 含度/分/秒符号
-            combined = draw_raw + " " + raw_orig
-            if "°" in combined or '"' in draw_raw or "′" in combined or "″" in combined:
-                # 但排除 X45°（倒角，属正常尺寸）—— 仅当含独立角度公差时才跳
-                if re.search(r"\d\s*°", combined) and "X45" not in combined.upper():
-                    continue
+        if is_gdt_row:
+            norm_draw_val, lower, upper = _normalize_drawing(
+                draw_raw, raw_orig, lower, upper)
+            # 如果提取到了 GD&T 符号，用提取到的公差值设置 lower/upper
+            if norm_draw_val != "SEE GD&T":
+                # 从 raw 提取数值作为 upper（lower 保持 0）
+                m = re.search(r"\d+(?:\.\d+)?", raw_orig)
+                if m:
+                    try:
+                        tol_val = float(m.group(0))
+                        lower = 0
+                        upper = tol_val
+                    except ValueError:
+                        lower = "OK"
+                        upper = "OK"
+            else:
+                # 官方PPAP格式：SEE GD&T 行 Lower=OK, Upper=OK
+                lower = "OK"
+                upper = "OK"
+        else:
+            norm_draw_val, lower, upper = _normalize_drawing(
+                draw_raw, raw_orig, lower, upper)
 
-            # 过滤：lower/upper 均空 → 无验收限
             lower_empty = lower is None or str(lower).strip() == ""
             upper_empty = upper is None or str(upper).strip() == ""
-            if lower_empty and upper_empty:
+
+            # Ref Only 行：即使无验收限也保留（参考尺寸，不做测量）
+            is_ref_only = (ref == "Ref")
+
+            # 角度：有验收限才保留，否则跳过
+            if is_angle_row and lower_empty and upper_empty:
                 continue
 
-            # 过滤：lower == upper（公差解析失败，如 ±0. 截断）
-            try:
-                if not lower_empty and not upper_empty and float(lower) == float(upper):
-                    continue
-            except (ValueError, TypeError):
-                pass
+            # 无验收限 → 跳过（粗糙度已在上面补好 upper）
+            # 例外：Ref Only 行保留，但需要有 dim_no 或 drawing 值在合理范围内
+            if lower_empty and upper_empty and not is_ref_only:
+                continue
 
-            # 跨视图去重：仅对"有编号的行"去重
-            # （dim_no 为 None 的是倍数展开行，必须保留，否则丢失展开实例）
+            # Ref Only 行噪声过滤：
+            #   - 无 dim_no 的 Ref 行一律丢弃（无气泡编号的参考标注不属于PPAP检验项）
+            if is_ref_only and lower_empty and upper_empty:
+                dim_no_present_ref = (dim_no_raw is not None
+                                      and str(dim_no_raw).strip() != "")
+                if not dim_no_present_ref:
+                    continue
+
+            # lower == upper → 公差解析失败，跳过（粗糙度/角度/GD&T豁免）
+            if not is_rough_row and not is_angle_row and not is_gdt_row:
+                try:
+                    if not lower_empty and not upper_empty \
+                            and float(lower) == float(upper):
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            # 跨视图去重（仅有编号的首行）：同一尺寸在不同视图分别出现时各保留一条
             dim_no_present = (dim_no_raw is not None
                               and str(dim_no_raw).strip() != "")
-            norm_draw_val = _normalize_drawing(draw_raw, raw_orig)
             if dim_no_present:
-                content_key = (norm_draw_val, str(lower), str(upper))
+                view_col = str(r[5]).strip() if len(r) > 5 and r[5] else ""
+                content_key = (ref, norm_draw_val, str(lower), str(upper), view_col)
                 if content_key in seen_content:
                     continue
                 seen_content.add(content_key)
-        else:
-            norm_draw_val = draw_raw   # SEE GD&T 原样
 
         raw_items.append({
             "dim_no_raw": dim_no_raw,
@@ -184,19 +341,18 @@ def _read_source(wb):
     # ── 第二遍：分配连续编号，处理倍数展开行 ──
     dims = []
     seq = 0
-    last_seq_key = None
+    last_base = None   # 仅按 dim_no base 分组，不再区分 drawing
 
     for it in raw_items:
         dim_no_str    = str(it["dim_no_raw"]).strip() if it["dim_no_raw"] is not None else ""
         dim_no_is_set = dim_no_str != ""
 
         if dim_no_is_set:
-            base      = re.sub(r"-\d+$", "", dim_no_str)
-            group_key = (base, it["drawing"])
-            if group_key != last_seq_key:
+            base = re.sub(r"-\d+$", "", dim_no_str)
+            if base != last_base:
                 seq += 1
-                last_seq_key = group_key
-                assign_no = f"{seq}.0"
+                last_base = base
+                assign_no = seq    # 整数类型，Excel显示为 1, 2, 3...
             else:
                 assign_no = None
         else:
@@ -411,6 +567,9 @@ def _build(wb, cavities):
     # ══════════════════════════════════════════
     # 数据行
     # ══════════════════════════════════════════
+    # GD&T 符号前缀集合（用于判断是否是形位公差行）
+    _GDT_PREFIXES = ("≡", "⊥", "∥", "⌀", "⊕", "⌒", "△", "○", "◎", "⊙", "⏥", "↗", "↺")
+
     r = HR2 + 1
     sm = Font(name="Arial", size=9)
 
@@ -430,12 +589,40 @@ def _build(wb, cavities):
     for item in dims:
         if item["dim_no"] is not None:
             seq_count += 1
-        is_gdt = (item["drawing"] == "SEE GD&T")
+        draw_val = item["drawing"]
+        is_gdt = (draw_val == "SEE GD&T" or
+                  (isinstance(draw_val, str) and draw_val.startswith(_GDT_PREFIXES)))
         ws.cell(r, 1, item["dim_no"])
         ws.cell(r, 2, item["ref"])
-        ws.cell(r, 3, item["drawing"])
-        ws.cell(r, 4, item["lower"])
-        ws.cell(r, 5, item["upper"])
+        # Drawing Dimension：
+        #   GD&T 符号行（≡0.10、⊥0.05 等）→ 字符串
+        #   D/R/DEG/RZ/Ra/SEE GD&T 前缀 → 字符串
+        #   纯数字 → 数值
+        draw_val = item["drawing"]
+        if is_gdt or (isinstance(draw_val, str) and not draw_val.replace(".", "").replace("-", "").isdigit()):
+            ws.cell(r, 3, draw_val)
+        else:
+            try:
+                fval = round(float(draw_val), 6)
+                fval = float(f"{fval:.10g}")
+                ws.cell(r, 3, fval)
+            except (ValueError, TypeError):
+                ws.cell(r, 3, draw_val)
+        # Lower/Upper：数值写为数字，OK等保留字符串；用 round() 修正浮点精度
+        for col_idx, key in ((4, "lower"), (5, "upper")):
+            val = item[key]
+            if val is None or str(val).strip() == "":
+                ws.cell(r, col_idx, "")
+            elif str(val).strip().upper() == "OK":
+                ws.cell(r, col_idx, "OK")
+            else:
+                try:
+                    fval = round(float(val), 6)
+                    # 去除浮点尾部噪声：如 64.59999999 → 64.6
+                    fval = float(f"{fval:.10g}")
+                    ws.cell(r, col_idx, fval)
+                except (ValueError, TypeError):
+                    ws.cell(r, col_idx, val)
         style_data_row(r, is_gdt=is_gdt)
         r += 1
 

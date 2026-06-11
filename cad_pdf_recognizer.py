@@ -1,3 +1,4 @@
+from collections import Counter
 """
 CAD图纸PDF识别系统 - 第一阶段
 功能：PDF解析 → 结构化信息提取 → Excel报表输出
@@ -112,7 +113,7 @@ class CADInfoExtractor:
         if fname_num and fname_num.group(1) in eight:
             tb["图号 (DWG NO.)"] = fname_num.group(1)
         elif eight:
-            tb["图号 (DWG NO.)"] = max(set(eight), key=eight.count)
+            tb["图号 (DWG NO.)"] = Counter(eight).most_common(1)[0][0]
         m = re.search(r"(TAXI CONN[^\n]*|[A-Z][A-Z0-9 .]*CONN[A-Z0-9 .]*HEADER)", self.t)
         tb["图名 (DWG NAME)"] = m.group(1).strip() if m else ""
         m = re.search(r"\b(\d{1,2}:\d{1,2})\b", self.t)
@@ -527,14 +528,32 @@ class CADInfoExtractor:
     def _tolerance_chart(self):
         idx = self.t.find("GENERAL TOLERANCE")
         if idx < 0:
+            idx = self.t.find("TOLERANCE UNLESS")
+        if idx < 0:
             return
         block = self.t[idx:idx + 800]
-        tols = re.findall(r"\+/-([\d.]+)", block)
-        ranges = re.findall(r"(\d+)\s*TO\s*(\d+)", block)
+
+        # 同时支持 "+/-0.15" 和 "±0.15" 两种写法
+        tols = re.findall(r"(?:\+/-|±)\s*([\d.]+)", block)
+
+        # 支持 "0 TO 20", ">0 TO 20", "FROM 0 TO 20" 等格式
+        ranges = re.findall(r"(?:FROM\s+)?[>\s]*(\d+)\s*(?:TO|–|-)\s*(\d+)", block)
+
+        # 同时抓取角度公差（±2° 格式）
+        ang_m = re.search(r"ANGULAR\s+TOLERANCE\s*[±+/-]+\s*([\d.]+)\s*°", block, re.IGNORECASE)
+        angular_tol = float(ang_m.group(1)) if ang_m else None
+
         for i, (lo, hi) in enumerate(ranges):
             self.r["一般公差表"].append({
                 "尺寸范围(mm)": f"{lo} – {hi}",
                 "公差(±mm)": tols[i] if i < len(tols) else "",
+            })
+
+        # 角度公差单独存一条，供 Vision 层查用
+        if angular_tol is not None:
+            self.r["一般公差表"].append({
+                "尺寸范围(mm)": "角度",
+                "公差(±mm)": str(angular_tol),
             })
 
 
