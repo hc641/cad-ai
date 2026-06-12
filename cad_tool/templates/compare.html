@@ -1,0 +1,1635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAD 图纸 OCR 识别</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'Noto Sans SC', 'system-ui', 'sans-serif'] },
+                    colors: {
+                        primary: { 50: '#f0f4ff', 100: '#e0e7ff', 500: '#4f46e5', 600: '#4338ca', 700: '#3730a3' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', 'Noto Sans SC', sans-serif; background: #f1f5f9; }
+
+        /* ── 玻璃导航 ── */
+        .glass { background: rgba(255,255,255,0.85); backdrop-filter: blur(16px); border-bottom: 1px solid rgba(226,232,240,0.7); }
+
+        /* ── 模式切换 tab ── */
+        .mode-tab { transition: all .2s; }
+        .mode-tab.active { background: #4338ca; color: #fff; box-shadow: 0 4px 14px -2px rgba(67,56,202,.35); }
+        .mode-tab:not(.active) { color: #64748b; }
+        .mode-tab:not(.active):hover { background: #f1f5f9; color: #1e293b; }
+
+        /* ── 上传区 ── */
+        .upload-zone {
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='12' ry='12' stroke='%23CBD5E1' stroke-width='1.5' stroke-dasharray='8%2c8' stroke-linecap='square'/%3e%3c/svg%3e");
+            transition: all .25s ease;
+        }
+        .upload-zone.drag-over {
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='12' ry='12' stroke='%234338CA' stroke-width='2' stroke-dasharray='8%2c8' stroke-linecap='square'/%3e%3c/svg%3e");
+            background-color: #eef2ff;
+        }
+        .upload-zone.filled { background-image: none; border: 1.5px solid #e2e8f0; background-color: #fff; }
+
+        /* ── 按钮 ── */
+        .btn-primary { background: linear-gradient(135deg,#4f46e5,#4338ca); transition: all .2s; }
+        .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 24px -4px rgba(79,70,229,.35); }
+        .btn-primary:active:not(:disabled) { transform: none; }
+        .btn-outline { border: 1.5px solid #e2e8f0; transition: all .2s; }
+        .btn-outline:hover { border-color: #4338ca; color: #4338ca; }
+
+        /* ── 进도条 ── */
+        .progress-track { background:#e2e8f0; border-radius:999px; overflow:hidden; }
+        .progress-fill { transition: width .5s cubic-bezier(.4,0,.2,1); }
+
+        /* ── diff 高亮 ── */
+        .diff-add { background: #dcfce7; color: #15803d; border-radius: 2px; padding: 0 1px; }
+        .diff-del { background: #fee2e2; color: #b91c1c; border-radius: 2px; padding: 0 1px; text-decoration: line-through; }
+
+        /* ── 结果行 ── */
+        .diff-row { transition: background .12s; }
+        .diff-row:hover { filter: brightness(.97); }
+
+        /* ── 分组折叠 ── */
+        .group-header { cursor: pointer; user-select: none; }
+        .group-header:hover { background: #f1f5f9; }
+        .group-body.collapsed { display: none; }
+
+        /* ── Toast ── */
+        #toast-container { position: fixed; top: 72px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+        .toast { pointer-events: all; transform: translateX(120%); opacity: 0; transition: all .3s cubic-bezier(.34,1.56,.64,1); min-width: 260px; max-width: 380px; }
+        .toast.show { transform: translateX(0); opacity: 1; }
+        .toast.hide { transform: translateX(120%); opacity: 0; }
+
+        /* ── 动画 ── */
+        .fade-in { animation: fadeIn .4s ease-out; }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:none } }
+
+        /* ── 统计卡 ── */
+        .stat-card { transition: transform .2s; }
+        .stat-card:hover { transform: translateY(-2px); }
+
+        /* ── 单识别结果 ── */
+        .result-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    </style>
+</head>
+<body class="text-slate-700 antialiased min-h-screen">
+
+<!-- ══ 导航 ══ -->
+<nav class="glass sticky top-0 z-50">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center text-white">
+                <i class="fa-solid fa-layer-group text-sm"></i>
+            </div>
+            <span class="font-semibold text-slate-800 tracking-tight">CAD 图纸 OCR 识别</span>
+        </div>
+        <div class="flex items-center gap-1">
+            <a href="#" onclick="event.preventDefault();openHistory()" class="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors"><i class="fa-solid fa-clock-rotate-left mr-1.5 text-xs"></i>历史记录</a>
+        </div>
+    </div>
+</nav>
+
+<!-- ══ Toast 容器 ══ -->
+<div id="toast-container"></div>
+
+<!-- ══ 历史记录抽屉 ══ -->
+<div id="history-backdrop" class="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm hidden" onclick="closeHistory()"></div>
+<div id="history-drawer" class="fixed top-0 right-0 z-50 h-full w-full max-w-md bg-white shadow-2xl flex flex-col translate-x-full transition-transform duration-300 ease-out">
+    <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center text-primary-600">
+                <i class="fa-solid fa-clock-rotate-left text-sm"></i>
+            </div>
+            <h2 class="font-semibold text-slate-800">历史记录</h2>
+        </div>
+        <button onclick="closeHistory()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+    </div>
+    <div id="history-list" class="flex-1 overflow-y-auto px-4 py-4 space-y-2">
+        <div class="flex items-center justify-center h-24 text-slate-400 text-sm">
+            <i class="fa-solid fa-circle-notch fa-spin mr-2"></i>加载中…
+        </div>
+    </div>
+    <div class="px-6 py-4 border-t border-slate-100 shrink-0 text-xs text-slate-400 text-center">
+        点击记录载入为图纸 A 或 B，可直接用于比对
+    </div>
+</div>
+
+<!-- ══ 主内容 ══ -->
+<main class="max-w-6xl mx-auto px-6 py-10">
+
+    <!-- 标题 -->
+    <div class="text-center mb-10">
+        <h1 class="text-3xl font-bold text-slate-900 tracking-tight mb-2">图纸智能识别</h1>
+        <p class="text-slate-500 text-sm max-w-lg mx-auto">上传 CAD 工程图纸，AI 自动提取尺寸、公差、BOM 等结构化数据；支持双图纸版本比对。</p>
+    </div>
+
+    <!-- 模式切换 -->
+    <div class="flex justify-center mb-10">
+        <div class="inline-flex bg-white rounded-xl p-1 shadow-sm border border-slate-100">
+            <button class="mode-tab active px-6 py-2.5 rounded-lg text-sm font-medium" onclick="switchMode('single')">
+                <i class="fa-solid fa-file-circle-check mr-2 text-xs"></i>单图识别
+            </button>
+            <button class="mode-tab px-6 py-2.5 rounded-lg text-sm font-medium" onclick="switchMode('compare')">
+                <i class="fa-solid fa-code-compare mr-2 text-xs"></i>版本比对
+            </button>
+        </div>
+    </div>
+
+    <!-- ════ 单图识别模式 ════ -->
+    <div id="mode-single">
+        <div class="max-w-lg mx-auto">
+            <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                <div class="flex items-center justify-between mb-5">
+                    <h3 class="font-semibold text-slate-800 text-sm">上传工程图纸</h3>
+                    <span id="single-badge" class="hidden result-tag bg-emerald-50 text-emerald-700 border border-emerald-100">
+                        <i class="fa-solid fa-circle-check text-xs"></i>已就绪
+                    </span>
+                </div>
+                <div id="zone-single" class="upload-zone rounded-xl p-8 text-center cursor-pointer relative group" onclick="document.getElementById('file-single').click()">
+                    <input type="file" id="file-single" class="hidden" accept=".pdf" onchange="handleSingleFile(this)">
+                    <div id="placeholder-single" class="py-4">
+                        <div class="w-14 h-14 rounded-full bg-slate-50 flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <i class="fa-solid fa-cloud-arrow-up text-slate-400 text-xl"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-700 mb-1">点击或拖拽上传 PDF</p>
+                        <p class="text-xs text-slate-400">支持 CAD 工程图纸，最大 50MB</p>
+                    </div>
+                    <div id="info-single" class="hidden text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-red-500 shrink-0">
+                                <i class="fa-solid fa-file-pdf"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-medium text-slate-800 truncate" id="single-name"></p>
+                                <p class="text-xs text-slate-500 mt-0.5" id="single-size"></p>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" id="remove-single" class="hidden absolute top-3 right-3 w-7 h-7 rounded-full bg-white shadow-sm border border-slate-200 flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-200 transition-colors" onclick="event.stopPropagation(); removeSingleFile()">
+                        <i class="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                </div>
+                <div class="mt-5 text-center">
+                    <button id="btn-single" onclick="startSingle()" disabled
+                        class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl text-white font-medium text-sm shadow-lg shadow-primary-500/20 disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        <span>开始识别</span>
+                    </button>
+                    <p id="single-hint" class="mt-2.5 text-xs text-slate-400">上传图纸后启动识别</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 单图进度 -->
+        <div id="single-progress" class="hidden max-w-lg mx-auto mt-6">
+            <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                <div class="flex justify-between items-center mb-3">
+                    <span class="text-sm font-medium text-slate-700" id="sp-text">准备中...</span>
+                    <span class="text-sm font-semibold text-primary-600 tabular-nums" id="sp-pct">0%</span>
+                </div>
+                <div class="progress-track h-2">
+                    <div id="sp-bar" class="progress-fill h-full bg-primary-600 rounded-full" style="width:0%"></div>
+                </div>
+                <div class="flex items-center gap-2 mt-3 text-xs text-slate-400">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i>
+                    <span id="sp-detail">初始化引擎...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 单图结果 -->
+        <div id="single-result" class="hidden max-w-lg mx-auto mt-6 fade-in">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                        <h3 class="font-semibold text-slate-800 text-sm">识别完成</h3>
+                        <p class="text-xs text-slate-400 mt-0.5" id="single-result-name">—</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="downloadSingleResult()" class="btn-outline inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-slate-600">
+                            <i class="fa-solid fa-download text-xs"></i>下载完整报告
+                        </button>
+                        <button onclick="useForCompare()" class="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-white">
+                            <i class="fa-solid fa-code-compare text-xs"></i>用于比对
+                        </button>
+                    </div>
+                </div>
+                <div class="px-6 py-5">
+                    <div class="grid grid-cols-3 gap-4 mb-5">
+                        <div class="text-center">
+                            <p class="text-2xl font-bold text-slate-800 tabular-nums" id="sr-views">—</p>
+                            <p class="text-xs text-slate-400 mt-1">视图数</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-2xl font-bold text-slate-800 tabular-nums" id="sr-elements">—</p>
+                            <p class="text-xs text-slate-400 mt-1">识别元素</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-2xl font-bold text-emerald-600 tabular-nums">✓</p>
+                            <p class="text-xs text-slate-400 mt-1">状态</p>
+                        </div>
+                    </div>
+                    <div id="sr-path-box" class="bg-slate-50 rounded-lg px-4 py-3">
+                        <p class="text-xs text-slate-500 mb-1">输出路径</p>
+                        <p class="text-xs font-mono text-slate-700 break-all" id="sr-path">—</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── 元素框选标注图查看器 ── -->
+        <div id="annotate-viewer" class="hidden max-w-5xl mx-auto mt-4 fade-in">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-wrap gap-3">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-violet-50 flex items-center justify-center">
+                            <i class="fa-solid fa-vector-square text-violet-500 text-sm"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold text-slate-800 text-sm">识别元素可视化</h3>
+                            <p class="text-xs text-slate-400" id="av-subtitle">各类型标注框叠加于原图</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <div id="av-pager" class="hidden items-center gap-1">
+                            <button onclick="avChangePage(-1)" class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600" id="av-prev">
+                                <i class="fa-solid fa-chevron-left"></i>
+                            </button>
+                            <span class="text-xs text-slate-500 px-2" id="av-page-label">1 / 1</span>
+                            <button onclick="avChangePage(1)" class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600" id="av-next">
+                                <i class="fa-solid fa-chevron-right"></i>
+                            </button>
+                        </div>
+                        <button onclick="avFullscreen()" title="全屏查看" class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600">
+                            <i class="fa-solid fa-expand"></i>
+                        </button>
+                        <button onclick="avDownload()" title="下载标注图" class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600">
+                            <i class="fa-solid fa-image"></i> 下载标注图
+                        </button>
+                    </div>
+                </div>
+                <!-- 图例 -->
+                <div class="px-6 pt-4 pb-2 flex flex-wrap gap-2">
+                    <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="inline-block w-3 h-3 rounded-sm" style="background:#dc2626"></span>尺寸</span>
+                    <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="inline-block w-3 h-3 rounded-sm" style="background:#2563eb"></span>GD&T</span>
+                    <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="inline-block w-3 h-3 rounded-sm" style="background:#16a34a"></span>角度</span>
+                    <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="inline-block w-3 h-3 rounded-sm" style="background:#ea580c"></span>粗糙度</span>
+                    <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="inline-block w-3 h-3 rounded-sm" style="background:#9333ea"></span>基准</span>
+                    <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="inline-block w-3 h-3 rounded-sm" style="background:#c026d3"></span>偏差</span>
+                </div>
+                <!-- 图片区 -->
+                <div class="px-4 pb-5">
+                    <div class="relative overflow-auto rounded-xl border border-slate-100 bg-slate-50" style="max-height:72vh">
+                        <img id="av-img" src="" alt="标注图" class="w-full h-auto block" style="cursor:zoom-in;min-width:600px" onclick="avFullscreen()"/>
+                        <div id="av-loading" class="absolute inset-0 flex items-center justify-center bg-white/80">
+                            <div class="flex flex-col items-center gap-3">
+                                <svg class="animate-spin h-8 w-8 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                                </svg>
+                                <span class="text-xs text-slate-500">标注图加载中…</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 全屏 lightbox -->
+        <div id="av-lightbox" class="fixed inset-0 z-50 bg-black/90 hidden items-center justify-center" onclick="avCloseLightbox()">
+            <img id="av-lightbox-img" src="" class="max-w-[95vw] max-h-[95vh] object-contain rounded shadow-2xl" onclick="event.stopPropagation()"/>
+            <button onclick="avCloseLightbox()" class="absolute top-4 right-4 text-white/70 hover:text-white text-2xl leading-none"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+    </div>
+
+    <!-- ════ 比对模式 ════ -->
+    <div id="mode-compare" class="hidden">
+
+        <!-- 上传区 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 relative">
+
+            <!-- 图纸 A -->
+            <div id="card-a" class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 transition-all duration-300">
+                <div class="flex items-center justify-between mb-5">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-slate-300 transition-colors" id="dot-a"></div>
+                        <h3 class="font-semibold text-slate-800 text-sm">基准图纸 <span class="text-slate-400 font-normal">版本 A</span></h3>
+                    </div>
+                    <span id="badge-a" class="hidden result-tag bg-emerald-50 text-emerald-700 border border-emerald-100">
+                        <i class="fa-solid fa-circle-check text-xs"></i>已就绪
+                    </span>
+                </div>
+                <div id="zone-a" class="upload-zone rounded-xl p-8 text-center cursor-pointer relative group" onclick="document.getElementById('file-a').click()">
+                    <input type="file" id="file-a" class="hidden" accept=".pdf" onchange="handleCompareFile(this, 'a')">
+                    <div id="placeholder-a" class="py-4">
+                        <div class="w-12 h-12 rounded-full bg-slate-50 flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <i class="fa-solid fa-cloud-arrow-up text-slate-400 text-lg"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-700 mb-1">点击或拖拽上传 PDF</p>
+                        <p class="text-xs text-slate-400">最大 50MB</p>
+                    </div>
+                    <div id="info-a" class="hidden text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-red-500 shrink-0">
+                                <i class="fa-solid fa-file-pdf"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-medium text-slate-800 truncate" id="name-a"></p>
+                                <div class="flex items-center gap-2 mt-0.5">
+                                    <p class="text-xs text-slate-500" id="size-a"></p>
+                                    <span id="ver-a" class="hidden result-tag bg-blue-50 text-blue-700 border border-blue-100"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" id="remove-a" class="hidden absolute top-3 right-3 w-7 h-7 rounded-full bg-white shadow-sm border border-slate-200 flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-200 transition-colors" onclick="event.stopPropagation(); removeCompareFile('a')">
+                        <i class="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 中间箭头 -->
+            <div class="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
+                <div class="w-10 h-10 rounded-full bg-white shadow-md border border-slate-100 flex items-center justify-center text-slate-400">
+                    <i class="fa-solid fa-arrows-left-right text-sm"></i>
+                </div>
+            </div>
+
+            <!-- 图纸 B -->
+            <div id="card-b" class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 transition-all duration-300">
+                <div class="flex items-center justify-between mb-5">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-slate-300 transition-colors" id="dot-b"></div>
+                        <h3 class="font-semibold text-slate-800 text-sm">对比图纸 <span class="text-slate-400 font-normal">版本 B</span></h3>
+                    </div>
+                    <span id="badge-b" class="hidden result-tag bg-emerald-50 text-emerald-700 border border-emerald-100">
+                        <i class="fa-solid fa-circle-check text-xs"></i>已就绪
+                    </span>
+                </div>
+                <div id="zone-b" class="upload-zone rounded-xl p-8 text-center cursor-pointer relative group" onclick="document.getElementById('file-b').click()">
+                    <input type="file" id="file-b" class="hidden" accept=".pdf" onchange="handleCompareFile(this, 'b')">
+                    <div id="placeholder-b" class="py-4">
+                        <div class="w-12 h-12 rounded-full bg-slate-50 flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <i class="fa-solid fa-cloud-arrow-up text-slate-400 text-lg"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-700 mb-1">点击或拖拽上传 PDF</p>
+                        <p class="text-xs text-slate-400">最大 50MB</p>
+                    </div>
+                    <div id="info-b" class="hidden text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center text-red-500 shrink-0">
+                                <i class="fa-solid fa-file-pdf"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-medium text-slate-800 truncate" id="name-b"></p>
+                                <div class="flex items-center gap-2 mt-0.5">
+                                    <p class="text-xs text-slate-500" id="size-b"></p>
+                                    <span id="ver-b" class="hidden result-tag bg-indigo-50 text-indigo-700 border border-indigo-100"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" id="remove-b" class="hidden absolute top-3 right-3 w-7 h-7 rounded-full bg-white shadow-sm border border-slate-200 flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-200 transition-colors" onclick="event.stopPropagation(); removeCompareFile('b')">
+                        <i class="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 比对按钮 -->
+        <div class="text-center mb-10">
+            <button id="btn-compare" onclick="startCompare()" disabled
+                class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl text-white font-medium text-sm shadow-lg shadow-primary-500/20 disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed">
+                <i class="fa-solid fa-code-compare"></i>
+                <span>开始比对</span>
+            </button>
+            <p id="compare-hint" class="mt-3 text-xs text-slate-400">请上传两份图纸后启动比对</p>
+        </div>
+
+        <!-- 比对进度 -->
+        <div id="compare-progress" class="hidden bg-white rounded-2xl p-6 shadow-sm border border-slate-100 mb-6">
+            <div class="flex justify-between items-center mb-3">
+                <span class="text-sm font-medium text-slate-700" id="cp-text">准备中...</span>
+                <span class="text-sm font-semibold text-primary-600 tabular-nums" id="cp-pct">0%</span>
+            </div>
+            <div class="progress-track h-2">
+                <div id="cp-bar" class="progress-fill h-full bg-primary-600 rounded-full" style="width:0%"></div>
+            </div>
+            <div class="flex items-center justify-between mt-3">
+                <div class="flex items-center gap-2 text-xs text-slate-400">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i>
+                    <span id="cp-detail">初始化...</span>
+                </div>
+                <!-- 阶段指示 -->
+                <div class="flex items-center gap-3 text-xs">
+                    <span id="stage-a" class="flex items-center gap-1 text-slate-300">
+                        <i class="fa-solid fa-circle text-xs"></i>识别 A
+                    </span>
+                    <span id="stage-b" class="flex items-center gap-1 text-slate-300">
+                        <i class="fa-solid fa-circle text-xs"></i>识别 B
+                    </span>
+                    <span id="stage-diff" class="flex items-center gap-1 text-slate-300">
+                        <i class="fa-solid fa-circle text-xs"></i>差异分析
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 比对结果区 -->
+        <div id="compare-result" class="hidden fade-in">
+
+            <!-- 统计卡：真实变更 -->
+            <div class="mb-3">
+                <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">真实工程变更 (高/中置信度)</h4>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600"><i class="fa-solid fa-plus"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-added">0</p><p class="text-xs text-slate-400">新增</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-rose-50 flex items-center justify-center text-rose-600"><i class="fa-solid fa-minus"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-removed">0</p><p class="text-xs text-slate-400">删除</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600"><i class="fa-solid fa-pen"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-modified">0</p><p class="text-xs text-slate-400">修改</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-primary-50 flex items-center justify-center text-primary-600"><i class="fa-solid fa-arrow-right-arrow-left"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-renum">0</p><p class="text-xs text-slate-400">重编号</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-4 shadow-sm border border-slate-100 flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-violet-50 flex items-center justify-center text-violet-600"><i class="fa-solid fa-table-list"></i></div>
+                        <div><p class="text-2xl font-bold text-slate-800 tabular-nums" id="stat-deviation">0</p><p class="text-xs text-slate-400">偏差覆盖</p></div>
+                    </div>
+                </div>
+            </div>
+            <!-- 统计卡：疑似噪声 -->
+            <div class="mb-8">
+                <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">疑似 OCR 噪声 (低置信度，建议忽略)</h4>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div class="stat-card bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3 opacity-60">
+                        <div class="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400"><i class="fa-solid fa-plus text-xs"></i></div>
+                        <div><p class="text-lg font-bold text-slate-500 tabular-nums" id="stat-noise-added">0</p><p class="text-xs text-slate-400">新增</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3 opacity-60">
+                        <div class="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400"><i class="fa-solid fa-minus text-xs"></i></div>
+                        <div><p class="text-lg font-bold text-slate-500 tabular-nums" id="stat-noise-removed">0</p><p class="text-xs text-slate-400">删除</p></div>
+                    </div>
+                    <div class="stat-card bg-white rounded-xl p-3 shadow-sm border border-slate-100 flex items-center gap-3 opacity-60">
+                        <div class="w-8 h-8 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400"><i class="fa-solid fa-pen text-xs"></i></div>
+                        <div><p class="text-lg font-bold text-slate-500 tabular-nums" id="stat-noise-modified">0</p><p class="text-xs text-slate-400">修改</p></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 差异表 -->
+            <!-- ── 图纸标注图查看器（比对模式）── -->
+            <div id="cmp-annotate-viewer" class="hidden mb-6 fade-in">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    <!-- 标题 + A/B 切换 -->
+                    <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-wrap gap-3">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-lg bg-violet-50 flex items-center justify-center">
+                                <i class="fa-solid fa-vector-square text-violet-500 text-sm"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-semibold text-slate-800 text-sm">图纸识别可视化</h3>
+                                <p class="text-xs text-slate-400" id="cmp-av-subtitle">元素标注框叠加于原图</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <!-- A/B 切换 -->
+                            <div class="flex rounded-lg overflow-hidden border border-slate-200">
+                                <button id="cmp-tab-a" onclick="cmpAvSwitch('a')"
+                                    class="px-4 py-1.5 text-xs font-medium bg-primary-600 text-white transition-colors">
+                                    版本 A
+                                </button>
+                                <button id="cmp-tab-b" onclick="cmpAvSwitch('b')"
+                                    class="px-4 py-1.5 text-xs font-medium bg-white text-slate-600 hover:bg-slate-50 transition-colors">
+                                    版本 B
+                                </button>
+                            </div>
+                            <!-- 翻页（多页 PDF） -->
+                            <div id="cmp-av-pager" class="hidden items-center gap-1">
+                                <button onclick="cmpAvChangePage(-1)" id="cmp-av-prev"
+                                    class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600">
+                                    <i class="fa-solid fa-chevron-left"></i>
+                                </button>
+                                <span class="text-xs text-slate-500 px-2" id="cmp-av-page-label">1 / 1</span>
+                                <button onclick="cmpAvChangePage(1)" id="cmp-av-next"
+                                    class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600">
+                                    <i class="fa-solid fa-chevron-right"></i>
+                                </button>
+                            </div>
+                            <button onclick="cmpAvFullscreen()" class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600" title="全屏">
+                                <i class="fa-solid fa-expand"></i>
+                            </button>
+                            <button onclick="cmpAvDownload()" class="btn-outline px-2.5 py-1.5 rounded-lg text-xs text-slate-600" title="下载">
+                                <i class="fa-solid fa-image"></i> 下载
+                            </button>
+                        </div>
+                    </div>
+                    <!-- 图例 -->
+                    <div class="px-6 pt-3 pb-2 flex flex-wrap gap-2">
+                        <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="w-3 h-3 rounded-sm inline-block" style="background:#dc2626"></span>尺寸</span>
+                        <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="w-3 h-3 rounded-sm inline-block" style="background:#2563eb"></span>GD&T</span>
+                        <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="w-3 h-3 rounded-sm inline-block" style="background:#16a34a"></span>角度</span>
+                        <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="w-3 h-3 rounded-sm inline-block" style="background:#ea580c"></span>粗糙度</span>
+                        <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="w-3 h-3 rounded-sm inline-block" style="background:#9333ea"></span>基准</span>
+                        <span class="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-full border border-slate-100"><span class="w-3 h-3 rounded-sm inline-block" style="background:#c026d3"></span>偏差</span>
+                    </div>
+                    <!-- 图片区 -->
+                    <div class="px-4 pb-5">
+                        <div class="relative overflow-auto rounded-xl border border-slate-100 bg-slate-50" style="max-height:70vh">
+                            <img id="cmp-av-img" src="" alt="标注图"
+                                class="w-full h-auto block" style="cursor:zoom-in;min-width:600px"
+                                onclick="cmpAvFullscreen()"/>
+                            <div id="cmp-av-loading" class="absolute inset-0 hidden items-center justify-center bg-white/80">
+                                <div class="flex flex-col items-center gap-3">
+                                    <svg class="animate-spin h-8 w-8 text-violet-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                                    </svg>
+                                    <span class="text-xs text-slate-500">标注图加载中…</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 全屏 lightbox（比对模式复用）-->
+            <div id="cmp-av-lightbox" class="fixed inset-0 z-50 bg-black/90 hidden items-center justify-center" onclick="cmpAvCloseLightbox()">
+                <img id="cmp-av-lightbox-img" src="" class="max-w-[95vw] max-h-[95vh] object-contain rounded shadow-2xl" onclick="event.stopPropagation()"/>
+                <button onclick="cmpAvCloseLightbox()" class="absolute top-4 right-4 text-white/70 hover:text-white text-2xl leading-none">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div class="px-6 py-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <h3 class="font-semibold text-slate-800">差异明细 <span class="text-xs text-slate-400 font-normal ml-1" id="diff-total-label"></span></h3>
+                    <div class="flex items-center gap-3 flex-wrap">
+                        <!-- 置信度筛选 -->
+                        <select id="filter-conf" onchange="filterAndRender()" class="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-all">
+                            <option value="all">全部置信度</option>
+                            <option value="high">高置信度 (真实变更)</option>
+                            <option value="medium">中置信度</option>
+                            <option value="low">低置信度 (疑似噪声)</option>
+                        </select>
+                        <!-- 类型筛选 -->
+                        <select id="filter-type" onchange="filterAndRender()" class="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-all">
+                            <option value="all">全部类型</option>
+                            <option value="added">仅新增</option>
+                            <option value="removed">仅删除</option>
+                            <option value="modified">仅修改</option>
+                        </select>
+                        <!-- 实体类型筛选 -->
+                        <select id="filter-entity" onchange="filterAndRender()" class="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 transition-all">
+                            <option value="all">全部实体</option>
+                            <option value="dimension">尺寸</option>
+                            <option value="gdt">GD&T</option>
+                            <option value="note">技术要求</option>
+                            <option value="bom">BOM</option>
+                            <option value="key_characteristic">关键特性</option>
+                            <option value="drawing_info">图纸信息</option>
+                            <option value="deviation_override">偏差覆盖</option>
+                            <option value="surface_roughness">表面粗糙度</option>
+                        </select>
+                        <!-- 搜索 -->
+                        <div class="relative">
+                            <i class="fa-solid fa-search absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-300 text-xs pointer-events-none"></i>
+                            <input id="search-input" type="text" placeholder="搜索值/视图..." oninput="filterAndRender()" class="pl-7 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500 w-36 transition-all">
+                        </div>
+                        <!-- 导出 -->
+                        <button onclick="exportSmartCSV()" class="btn-outline inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600">
+                            <i class="fa-solid fa-file-excel text-xs"></i>导出完整报告
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 分组结果 -->
+                <div id="diff-groups" class="divide-y divide-slate-100">
+                    <!-- JS 填充 -->
+                </div>
+
+                <!-- 空态 -->
+                <div id="empty-diff" class="hidden text-center py-16">
+                    <div class="w-16 h-16 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4">
+                        <i class="fa-solid fa-check-double text-emerald-400 text-2xl"></i>
+                    </div>
+                    <p class="text-sm font-medium text-slate-600">两份图纸完全一致</p>
+                    <p class="text-xs text-slate-400 mt-1">未检测到任何工程差异</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<!-- ══ 全局加载遮罩 ══ -->
+<div id="loading-mask" class="hidden fixed inset-0 z-50 bg-slate-900/20 backdrop-blur-sm flex items-center justify-center">
+    <div class="bg-white rounded-2xl p-8 shadow-2xl flex flex-col items-center max-w-xs w-full mx-4">
+        <div class="relative w-12 h-12 mb-5">
+            <div class="absolute inset-0 rounded-full border-2 border-slate-100"></div>
+            <div class="absolute inset-0 rounded-full border-2 border-primary-600 border-t-transparent animate-spin"></div>
+        </div>
+        <p class="text-sm font-semibold text-slate-800" id="mask-text">处理中...</p>
+        <p class="text-xs text-slate-400 mt-1.5" id="mask-sub">请稍候</p>
+    </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+// 状态
+// ══════════════════════════════════════════════
+let currentMode = 'single';
+let singleFile = null;
+let singleResultPath = null;
+let compareFiles = { a: null, b: null };
+let compareResultData = [];
+let compareResultPaths = { a: null, b: null };
+let compareAnnotated = { a: [], b: [] };  // 比对模式标注图路径
+
+// ══════════════════════════════════════════════
+// Toast 系统
+// ══════════════════════════════════════════════
+function toast(msg, type = 'info', duration = 4000) {
+    const colors = {
+        success: 'bg-emerald-600',
+        error:   'bg-rose-600',
+        warn:    'bg-amber-500',
+        info:    'bg-slate-700'
+    };
+    const icons = {
+        success: 'fa-circle-check',
+        error:   'fa-circle-xmark',
+        warn:    'fa-triangle-exclamation',
+        info:    'fa-circle-info'
+    };
+    const el = document.createElement('div');
+    el.className = `toast ${colors[type]} text-white rounded-xl px-4 py-3 flex items-start gap-3 shadow-lg`;
+    el.innerHTML = `<i class="fa-solid ${icons[type]} mt-0.5 shrink-0 text-sm"></i><span class="text-sm leading-snug">${escapeHtml(msg)}</span>`;
+    document.getElementById('toast-container').appendChild(el);
+    requestAnimationFrame(() => { el.classList.add('show'); });
+    setTimeout(() => {
+        el.classList.add('hide');
+        el.classList.remove('show');
+        el.addEventListener('transitionend', () => el.remove());
+    }, duration);
+}
+
+// ══════════════════════════════════════════════
+// 模式切换
+// ══════════════════════════════════════════════
+function switchMode(mode) {
+    currentMode = mode;
+    document.querySelectorAll('.mode-tab').forEach((t, i) => {
+        t.classList.toggle('active', (i === 0 && mode === 'single') || (i === 1 && mode === 'compare'));
+    });
+    document.getElementById('mode-single').classList.toggle('hidden', mode !== 'single');
+    document.getElementById('mode-compare').classList.toggle('hidden', mode !== 'compare');
+}
+
+// ══════════════════════════════════════════════
+// 单图识别
+// ══════════════════════════════════════════════
+function handleSingleFile(input) {
+    const file = input.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') { toast('仅支持 PDF 格式文件', 'warn'); return; }
+    if (file.size > 50 * 1024 * 1024) { toast('文件大小超过 50MB 限制', 'warn'); return; }
+
+    singleFile = file;
+    document.getElementById('zone-single').classList.add('filled');
+    document.getElementById('placeholder-single').classList.add('hidden');
+    document.getElementById('info-single').classList.remove('hidden');
+    document.getElementById('remove-single').classList.remove('hidden');
+    document.getElementById('single-badge').classList.remove('hidden');
+    document.getElementById('single-name').textContent = file.name;
+    document.getElementById('single-size').textContent = fmtSize(file.size);
+    document.getElementById('btn-single').disabled = false;
+    document.getElementById('single-hint').textContent = '文件已就绪，点击开始识别';
+    document.getElementById('single-hint').className = 'mt-2.5 text-xs text-primary-600 font-medium';
+}
+
+function removeSingleFile() {
+    singleFile = null; singleResultPath = null;
+    document.getElementById('file-single').value = '';
+    document.getElementById('zone-single').classList.remove('filled');
+    document.getElementById('placeholder-single').classList.remove('hidden');
+    document.getElementById('info-single').classList.add('hidden');
+    document.getElementById('remove-single').classList.add('hidden');
+    document.getElementById('single-badge').classList.add('hidden');
+    document.getElementById('btn-single').disabled = true;
+    document.getElementById('single-hint').textContent = '上传图纸后启动识别';
+    document.getElementById('single-hint').className = 'mt-2.5 text-xs text-slate-400';
+    document.getElementById('single-result').classList.add('hidden');
+    document.getElementById('single-progress').classList.add('hidden');
+}
+
+function setSingleProgress(pct, text, detail) {
+    document.getElementById('sp-bar').style.width = pct + '%';
+    document.getElementById('sp-pct').textContent = pct + '%';
+    document.getElementById('sp-text').textContent = text;
+    document.getElementById('sp-detail').textContent = detail;
+}
+
+async function startSingle() {
+    if (!singleFile) return;
+    document.getElementById('btn-single').disabled = true;
+    document.getElementById('single-result').classList.add('hidden');
+    document.getElementById('single-progress').classList.remove('hidden');
+    setSingleProgress(10, '上传图纸...', '建立连接');
+    try {
+        const form = new FormData();
+        form.append('pdf', singleFile);
+        setSingleProgress(30, 'AI 视觉识别...', '多模态分析中');
+        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || '识别失败');
+        setSingleProgress(80, '整理结构化数据...', '写入 Excel');
+        await sleep(300);
+        setSingleProgress(100, '识别完成', '');
+        singleResultPath = data.output;
+        await sleep(400);
+        document.getElementById('single-progress').classList.add('hidden');
+        showSingleResult(data);
+        toast('识别成功，Excel 已生成', 'success');
+    } catch(e) {
+        document.getElementById('single-progress').classList.add('hidden');
+        document.getElementById('btn-single').disabled = false;
+        toast('识别失败：' + e.message, 'error');
+    }
+}
+
+// ── 标注图查看器状态 ──
+let avPages = [];      // 标注图路径列表（多页图纸）
+let avCurrent = 0;     // 当前页索引
+
+function showSingleResult(data) {
+    document.getElementById('single-result').classList.remove('hidden');
+    document.getElementById('single-result-name').textContent = singleFile?.name || '—';
+    document.getElementById('sr-views').textContent = Array.isArray(data.views) ? data.views.length : (data.views || '—');
+    document.getElementById('sr-elements').textContent = data.elements || '—';
+    document.getElementById('sr-path').textContent = data.output || '—';
+
+    // 标注图
+    const annotated = data.annotated || [];
+    if (annotated.length > 0) {
+        avPages = annotated;
+        avCurrent = 0;
+        avShow();
+    } else {
+        document.getElementById('annotate-viewer').classList.add('hidden');
+    }
+}
+
+function avShow() {
+    const viewer = document.getElementById('annotate-viewer');
+    const img    = document.getElementById('av-img');
+    const loading = document.getElementById('av-loading');
+    const pager  = document.getElementById('av-pager');
+    const label  = document.getElementById('av-page-label');
+    const sub    = document.getElementById('av-subtitle');
+
+    viewer.classList.remove('hidden');
+    loading.classList.remove('hidden');
+    img.src = '';
+
+    const path = avPages[avCurrent];
+    const url  = '/api/annotated?path=' + encodeURIComponent(path);
+    img.onload  = () => loading.classList.add('hidden');
+    img.onerror = () => {
+        loading.classList.add('hidden');
+        sub.textContent = '⚠ 标注图加载失败（模型未返回坐标数据）';
+    };
+    img.src = url;
+
+    // 翻页控件
+    if (avPages.length > 1) {
+        pager.classList.remove('hidden');
+        pager.classList.add('flex');
+        label.textContent = `${avCurrent + 1} / ${avPages.length}`;
+        document.getElementById('av-prev').disabled = avCurrent === 0;
+        document.getElementById('av-next').disabled = avCurrent === avPages.length - 1;
+    } else {
+        pager.classList.add('hidden');
+    }
+    sub.textContent = `第 ${avCurrent + 1} 页 · 各元素已按类型着色标注`;
+}
+
+function avChangePage(delta) {
+    const next = avCurrent + delta;
+    if (next < 0 || next >= avPages.length) return;
+    avCurrent = next;
+    avShow();
+}
+
+function avFullscreen() {
+    const img = document.getElementById('av-img');
+    if (!img.src || img.src === window.location.href) return;
+    const lb    = document.getElementById('av-lightbox');
+    const lbImg = document.getElementById('av-lightbox-img');
+    lbImg.src = img.src;
+    lb.classList.remove('hidden');
+    lb.classList.add('flex');
+    document.body.style.overflow = 'hidden';
+}
+
+function avCloseLightbox() {
+    const lb = document.getElementById('av-lightbox');
+    lb.classList.add('hidden');
+    lb.classList.remove('flex');
+    document.body.style.overflow = '';
+}
+
+function avDownload() {
+    if (!avPages.length) return;
+    const path = avPages[avCurrent];
+    const a = document.createElement('a');
+    a.href = '/api/annotated?path=' + encodeURIComponent(path);
+    const base = path.split(/[\\/]/).pop() || '标注图.png';
+    a.download = base;
+    a.click();
+}
+
+// ══════════════════════════════════════════════
+// 比对模式 标注图查看器
+// ══════════════════════════════════════════════
+let cmpAvSide = 'a';       // 当前显示 a 或 b
+let cmpAvCurrent = 0;      // 当前页索引
+
+function cmpAvInit() {
+    const hasA = compareAnnotated.a.length > 0;
+    const hasB = compareAnnotated.b.length > 0;
+    if (!hasA && !hasB) {
+        document.getElementById('cmp-annotate-viewer').classList.add('hidden');
+        return;
+    }
+    document.getElementById('cmp-annotate-viewer').classList.remove('hidden');
+    // 默认显示 A 侧（若 A 无则显示 B）
+    cmpAvSide = hasA ? 'a' : 'b';
+    cmpAvCurrent = 0;
+    cmpAvRender();
+}
+
+function cmpAvSwitch(side) {
+    if (cmpAvSide === side) return;
+    cmpAvSide = side;
+    cmpAvCurrent = 0;
+    cmpAvRender();
+}
+
+function cmpAvRender() {
+    const pages = compareAnnotated[cmpAvSide] || [];
+    const img     = document.getElementById('cmp-av-img');
+    const loading = document.getElementById('cmp-av-loading');
+    const pager   = document.getElementById('cmp-av-pager');
+    const label   = document.getElementById('cmp-av-page-label');
+    const sub     = document.getElementById('cmp-av-subtitle');
+    const tabA    = document.getElementById('cmp-tab-a');
+    const tabB    = document.getElementById('cmp-tab-b');
+
+    // 切换 tab 高亮
+    const activeClass = ['bg-primary-600', 'text-white'];
+    const inactiveClass = ['bg-white', 'text-slate-600'];
+    [tabA, tabB].forEach(t => { t.classList.remove(...activeClass); t.classList.add(...inactiveClass); });
+    const activeTab = cmpAvSide === 'a' ? tabA : tabB;
+    activeTab.classList.remove(...inactiveClass);
+    activeTab.classList.add(...activeClass);
+
+    if (!pages.length) {
+        img.src = '';
+        sub.textContent = `版本 ${cmpAvSide.toUpperCase()} 暂无标注图`;
+        return;
+    }
+
+    loading.classList.remove('hidden');
+    loading.classList.add('flex');
+    img.onload = null; img.onerror = null;
+    img.src = '';
+
+    const filename = compareFiles[cmpAvSide]?.name || `版本${cmpAvSide.toUpperCase()}`;
+    sub.textContent = `${filename} · 第 ${cmpAvCurrent + 1} 页 · 各元素已按类型着色标注`;
+
+    const path = pages[cmpAvCurrent];
+    const url  = '/api/annotated?path=' + encodeURIComponent(path);
+
+    img.onload  = () => { loading.classList.add('hidden'); loading.classList.remove('flex'); };
+    img.onerror = () => {
+        loading.classList.add('hidden'); loading.classList.remove('flex');
+        sub.textContent = '⚠ 标注图加载失败（模型未返回坐标数据）';
+    };
+    img.src = url;
+
+    // 翻页控件
+    if (pages.length > 1) {
+        pager.classList.remove('hidden'); pager.classList.add('flex');
+        label.textContent = `${cmpAvCurrent + 1} / ${pages.length}`;
+        document.getElementById('cmp-av-prev').disabled = cmpAvCurrent === 0;
+        document.getElementById('cmp-av-next').disabled = cmpAvCurrent === pages.length - 1;
+    } else {
+        pager.classList.add('hidden');
+    }
+}
+
+function cmpAvChangePage(delta) {
+    const pages = compareAnnotated[cmpAvSide] || [];
+    const next = cmpAvCurrent + delta;
+    if (next < 0 || next >= pages.length) return;
+    cmpAvCurrent = next;
+    cmpAvRender();
+}
+
+function cmpAvFullscreen() {
+    const img = document.getElementById('cmp-av-img');
+    if (!img.src || img.src === window.location.href) return;
+    const lb = document.getElementById('cmp-av-lightbox');
+    document.getElementById('cmp-av-lightbox-img').src = img.src;
+    lb.classList.remove('hidden'); lb.classList.add('flex');
+    document.body.style.overflow = 'hidden';
+}
+
+function cmpAvCloseLightbox() {
+    const lb = document.getElementById('cmp-av-lightbox');
+    lb.classList.add('hidden'); lb.classList.remove('flex');
+    document.body.style.overflow = '';
+}
+
+function cmpAvDownload() {
+    const pages = compareAnnotated[cmpAvSide] || [];
+    if (!pages.length) return;
+    const path = pages[cmpAvCurrent];
+    const a = document.createElement('a');
+    a.href = '/api/annotated?path=' + encodeURIComponent(path);
+    a.download = path.split(/[\\/]/).pop() || `标注图_${cmpAvSide}.png`;
+    a.click();
+}
+
+async function downloadSingleResult() {
+    if (!singleResultPath) { toast('无可下载结果', 'warn'); return; }
+    try {
+        toast('正在生成完整报告…', 'info');
+        const cavities = parseInt(document.getElementById('cavities-input')?.value || '4', 10) || 4;
+        const res = await fetch('/api/compare/smart_csv', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path_a: singleResultPath, path_b: singleResultPath, cavities }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || res.statusText);
+        }
+        const blob = await res.blob();
+        const base = singleFile ? singleFile.name.replace(/\.pdf$/i, '') : 'result';
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = base + '_完整报告.xlsx';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast('完整报告已下载', 'success');
+    } catch(e) { toast('下载失败：' + e.message, 'error'); }
+}
+
+function useForCompare() {
+    if (!singleFile || !singleResultPath) return;
+    switchMode('compare');
+    // 将单图结果预填入比对A侧
+    compareFiles.a = singleFile;
+    compareResultPaths.a = singleResultPath;
+    setCompareFileUI('a', singleFile);
+    toast('已将识别结果填入图纸 A，请继续上传图纸 B', 'info');
+}
+
+// ══════════════════════════════════════════════
+// 比对模式
+// ══════════════════════════════════════════════
+// ── 单图区拖拽（DOMContentLoaded） ──
+document.addEventListener('DOMContentLoaded', () => {
+    const zs = document.getElementById('zone-single');
+    if (zs) {
+        zs.addEventListener('dragover', e => { e.preventDefault(); zs.classList.add('drag-over'); });
+        zs.addEventListener('dragleave', () => zs.classList.remove('drag-over'));
+        zs.addEventListener('drop', e => {
+            e.preventDefault(); zs.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) {
+                const dt = new DataTransfer();
+                dt.items.add(e.dataTransfer.files[0]);
+                document.getElementById('file-single').files = dt.files;
+                handleSingleFile(document.getElementById('file-single'));
+            }
+        });
+    }
+});
+
+['a', 'b'].forEach(side => {
+    // 拖拽
+    const zoneEl = () => document.getElementById('zone-' + side);
+    document.addEventListener('DOMContentLoaded', () => {
+        zoneEl().addEventListener('dragover', e => { e.preventDefault(); zoneEl().classList.add('drag-over'); });
+        zoneEl().addEventListener('dragleave', () => zoneEl().classList.remove('drag-over'));
+        zoneEl().addEventListener('drop', e => {
+            e.preventDefault(); zoneEl().classList.remove('drag-over');
+            if (e.dataTransfer.files.length) handleCompareFile({ files: e.dataTransfer.files }, side);
+        });
+    });
+});
+
+// 补充拖拽（DOMContentLoaded 可能已过）
+setTimeout(() => {
+    // ── 单图区拖拽 ──
+    const zoneSingle = document.getElementById('zone-single');
+    if (zoneSingle) {
+        zoneSingle.addEventListener('dragover', e => { e.preventDefault(); zoneSingle.classList.add('drag-over'); });
+        zoneSingle.addEventListener('dragleave', () => zoneSingle.classList.remove('drag-over'));
+        zoneSingle.addEventListener('drop', e => {
+            e.preventDefault(); zoneSingle.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) {
+                const dt = new DataTransfer();
+                dt.items.add(e.dataTransfer.files[0]);
+                document.getElementById('file-single').files = dt.files;
+                handleSingleFile(document.getElementById('file-single'));
+            }
+        });
+    }
+    // ── 比对区拖拽 ──
+    ['a','b'].forEach(side => {
+        const zone = document.getElementById('zone-' + side);
+        if (!zone) return;
+        zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+        zone.addEventListener('drop', e => {
+            e.preventDefault(); zone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) handleCompareFile({ files: e.dataTransfer.files }, side);
+        });
+    });
+}, 0);
+
+function handleCompareFile(input, side) {
+    const file = input.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') { toast('仅支持 PDF 格式', 'warn'); return; }
+    if (file.size > 50 * 1024 * 1024) { toast('文件超过 50MB 限制', 'warn'); return; }
+    compareFiles[side] = file;
+    compareResultPaths[side] = null; // 重置，需重新识别
+    setCompareFileUI(side, file);
+    checkCompareReady();
+}
+
+function setCompareFileUI(side, file) {
+    document.getElementById('zone-' + side).classList.add('filled');
+    document.getElementById('placeholder-' + side).classList.add('hidden');
+    document.getElementById('info-' + side).classList.remove('hidden');
+    document.getElementById('remove-' + side).classList.remove('hidden');
+    document.getElementById('badge-' + side).classList.remove('hidden');
+    document.getElementById('dot-' + side).classList.remove('bg-slate-300');
+    document.getElementById('dot-' + side).classList.add('bg-emerald-500');
+    document.getElementById('name-' + side).textContent = file.name;
+    document.getElementById('size-' + side).textContent = fmtSize(file.size);
+    // 版本号提取
+    const verMatch = file.name.match(/[_\-\s]?[vV](\d+[\.\d]*)|[_\-](\d{8})|[_ ]?[Rr][Ee][Vv][_\-\s]?([A-Z0-9]+)/);
+    const verEl = document.getElementById('ver-' + side);
+    if (verMatch) {
+        const ver = verMatch[1] || verMatch[2] || verMatch[3];
+        verEl.textContent = 'v' + ver;
+        verEl.classList.remove('hidden');
+    } else {
+        verEl.classList.add('hidden');
+    }
+}
+
+function removeCompareFile(side) {
+    compareFiles[side] = null;
+    compareResultPaths[side] = null;
+    document.getElementById('file-' + side).value = '';
+    document.getElementById('zone-' + side).classList.remove('filled');
+    document.getElementById('placeholder-' + side).classList.remove('hidden');
+    document.getElementById('info-' + side).classList.add('hidden');
+    document.getElementById('remove-' + side).classList.add('hidden');
+    document.getElementById('badge-' + side).classList.add('hidden');
+    document.getElementById('dot-' + side).classList.remove('bg-emerald-500');
+    document.getElementById('dot-' + side).classList.add('bg-slate-300');
+    checkCompareReady();
+}
+
+function checkCompareReady() {
+    const ready = compareFiles.a && compareFiles.b;
+    document.getElementById('btn-compare').disabled = !ready;
+    const hint = document.getElementById('compare-hint');
+    if (ready) {
+        hint.textContent = '两份图纸已就绪，点击开始比对';
+        hint.className = 'mt-3 text-xs text-primary-600 font-medium';
+    } else {
+        hint.textContent = '请上传两份图纸后启动比对';
+        hint.className = 'mt-3 text-xs text-slate-400';
+    }
+}
+
+function setStage(stage) {
+    ['a','b','diff'].forEach(s => {
+        const el = document.getElementById('stage-' + s);
+        if (s === stage) {
+            el.className = 'flex items-center gap-1 text-primary-600 font-medium';
+            el.querySelector('i').className = 'fa-solid fa-circle-notch fa-spin text-xs';
+        } else if (['a','b','diff'].indexOf(s) < ['a','b','diff'].indexOf(stage)) {
+            el.className = 'flex items-center gap-1 text-emerald-600';
+            el.querySelector('i').className = 'fa-solid fa-circle-check text-xs';
+        } else {
+            el.className = 'flex items-center gap-1 text-slate-300';
+            el.querySelector('i').className = 'fa-solid fa-circle text-xs';
+        }
+    });
+}
+
+function setCmpProgress(pct, text, detail) {
+    document.getElementById('cp-bar').style.width = pct + '%';
+    document.getElementById('cp-pct').textContent = pct + '%';
+    document.getElementById('cp-text').textContent = text;
+    document.getElementById('cp-detail').textContent = detail;
+    document.getElementById('mask-text').textContent = text;
+    document.getElementById('mask-sub').textContent = detail;
+}
+
+async function startCompare() {
+    if (!compareFiles.a || !compareFiles.b) return;
+    document.getElementById('btn-compare').disabled = true;
+    document.getElementById('compare-result').classList.add('hidden');
+    document.getElementById('cmp-annotate-viewer').classList.add('hidden');
+    compareAnnotated = { a: [], b: [] };
+    document.getElementById('compare-progress').classList.remove('hidden');
+    document.getElementById('loading-mask').classList.remove('hidden');
+
+    try {
+        setStage('a');
+        setCmpProgress(8, '上传并识别图纸 A...', '多模态视觉分析');
+        // 若已有路径（从单图结果复用），跳过识别
+        if (!compareResultPaths.a) {
+            const resA = await uploadAndRecognize(compareFiles.a);
+            compareResultPaths.a = resA.output;
+            compareAnnotated.a = resA.annotated || [];
+        }
+
+        setStage('b');
+        setCmpProgress(40, '上传并识别图纸 B...', '多模态视觉分析');
+        if (!compareResultPaths.b) {
+            const resB = await uploadAndRecognize(compareFiles.b);
+            compareResultPaths.b = resB.output;
+            compareAnnotated.b = resB.annotated || [];
+        }
+
+        setStage('diff');
+        setCmpProgress(72, '结构化差异分析...', '智能匹配算法');
+        await sleep(300);
+
+        const cmp = await fetch('/api/compare/smart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path_a: compareResultPaths.a, path_b: compareResultPaths.b })
+        }).then(r => r.json());
+
+        if (!cmp.success) throw new Error(cmp.error || '比对失败');
+
+        setCmpProgress(100, '比对完成', '');
+        await sleep(400);
+
+        document.getElementById('compare-progress').classList.add('hidden');
+        document.getElementById('loading-mask').classList.add('hidden');
+        renderCompareResult(cmp);
+        const rc = cmp.summary.real_changes || {};
+const nc = cmp.summary.likely_noise || {};
+toast('比对完成：真实变更 ' + (rc.total || 0) + ' 项，疑似噪声 ' + (nc.total || 0) + ' 项，重编号 ' + (cmp.summary.re_numbered_count || 0) + ' 项', 'success');
+
+    } catch(e) {
+        document.getElementById('compare-progress').classList.add('hidden');
+        document.getElementById('loading-mask').classList.add('hidden');
+        document.getElementById('btn-compare').disabled = false;
+        toast('比对失败：' + e.message, 'error', 6000);
+    }
+}
+
+async function uploadAndRecognize(file) {
+    const form = new FormData();
+    form.append('pdf', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '识别失败');
+    return data;
+}
+
+// ══════════════════════════════════════════════
+// 渲染比对结果（分组 + diff 高亮）
+// ══════════════════════════════════════════════
+function renderCompareResult(data) {
+    compareResultData = data.changes || [];
+    const rc = data.summary.real_changes || {};
+    document.getElementById('stat-added').textContent = rc.added || 0;
+    document.getElementById('stat-removed').textContent = rc.removed || 0;
+    document.getElementById('stat-modified').textContent = rc.modified || 0;
+    document.getElementById('stat-renum').textContent = data.summary.re_numbered_count || 0;
+    document.getElementById('stat-deviation').textContent = data.deviation_overrides || 0;
+    const noise = data.summary.likely_noise || {};
+    document.getElementById('stat-noise-added').textContent = noise.added || 0;
+    document.getElementById('stat-noise-removed').textContent = noise.removed || 0;
+    document.getElementById('stat-noise-modified').textContent = noise.modified || 0;
+    const total = (rc.total || 0) + (noise.total || 0);
+    document.getElementById('diff-total-label').textContent = '共 ' + total + ' 项，真实变更 ' + (rc.total || 0) + ' 项';
+    document.getElementById('compare-result').classList.remove('hidden');
+    // 显示比对模式标注图查看器
+    cmpAvInit();
+    filterAndRender();
+}
+
+function filterAndRender() {
+    const filterType = document.getElementById('filter-type').value;
+    const filterConf = document.getElementById('filter-conf').value;
+    const filterEntity = document.getElementById('filter-entity').value;
+    const query = document.getElementById('search-input').value.trim().toLowerCase();
+
+    let filtered = compareResultData;
+    if (filterType !== 'all') filtered = filtered.filter(d => d.type === filterType);
+    if (filterConf !== 'all') filtered = filtered.filter(d => d.confidence === filterConf);
+    if (filterEntity !== 'all') filtered = filtered.filter(d => d.entity_type === filterEntity);
+    if (query) filtered = filtered.filter(d => {
+        const old = d.old || {}, nev = d.new || {};
+        const searchable = [
+            old.dim_no, nev.dim_no, old.value, nev.value,
+            old.view, nev.view, old.tolerance, nev.tolerance,
+            d.reason, d.entity_type
+        ].join(' ').toLowerCase();
+        return searchable.includes(query);
+    });
+
+    const container = document.getElementById('diff-groups');
+    container.innerHTML = '';
+
+    if (filtered.length === 0) {
+        document.getElementById('empty-diff').classList.remove('hidden');
+        return;
+    }
+    document.getElementById('empty-diff').classList.add('hidden');
+
+    const entityLabels = {
+        dimension: '尺寸标注', gdt: 'GD&T 几何公差', note: '技术要求',
+        bom: 'BOM 物料', key_characteristic: '关键特性',
+        drawing_info: '图纸信息',
+        deviation_override: '偏差覆盖 (Deviation Table)',
+        surface_roughness: '表面粗糙度'
+    };
+    const groups = {};
+    filtered.forEach(d => {
+        const et = d.entity_type || 'other';
+        const label = entityLabels[et] || et;
+        if (!groups[label]) groups[label] = [];
+        groups[label].push(d);
+    });
+
+    Object.entries(groups).forEach(([cat, diffs]) => {
+        const groupEl = document.createElement('div');
+
+        const highN = diffs.filter(d => d.confidence === 'high').length;
+        const medN = diffs.filter(d => d.confidence === 'medium').length;
+        const lowN = diffs.filter(d => d.confidence === 'low').length;
+        const badgeParts = [];
+        if (highN) badgeParts.push('<span class="result-tag bg-rose-100 text-rose-700" title="真实变更">&#x1F534; ' + highN + '</span>');
+        if (medN) badgeParts.push('<span class="result-tag bg-amber-100 text-amber-700" title="待确认">&#x1F7E1; ' + medN + '</span>');
+        if (lowN) badgeParts.push('<span class="result-tag bg-slate-100 text-slate-500" title="疑似噪声">&#x26AA; ' + lowN + '</span>');
+
+        groupEl.innerHTML = '<div class="group-header px-6 py-3.5 flex items-center justify-between bg-slate-50 border-b border-slate-100" onclick="toggleGroup(this)">' +
+            '<div class="flex items-center gap-3">' +
+                '<i class="fa-solid fa-chevron-down text-slate-400 text-xs transition-transform"></i>' +
+                '<span class="text-sm font-semibold text-slate-700">' + esc(cat) + '</span>' +
+                '<span class="text-xs text-slate-400">' + diffs.length + ' 项</span>' +
+            '</div>' +
+            '<div class="flex items-center gap-1.5">' + badgeParts.join('') + '</div>' +
+            '</div>' +
+            '<div class="group-body overflow-x-auto">' +
+                '<table class="w-full text-sm">' +
+                    '<thead><tr class="border-b border-slate-100">' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-10">#</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-16">类型</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide w-16">置信度</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">旧值 (A)</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">新值 (B)</th>' +
+                        '<th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">变更原因</th>' +
+                    '</tr></thead>' +
+                    '<tbody class="divide-y divide-slate-50">' +
+                        diffs.map((d, i) => renderSmartDiffRow(d, i)).join('') +
+                    '</tbody>' +
+                '</table>' +
+            '</div>';
+        container.appendChild(groupEl);
+    });
+}
+
+function renderSmartDiffRow(d, i) {
+    const rowBg = d.confidence === 'low' ? 'opacity-50' : '';
+    const typeBadge = {
+        added:    '<span class="result-tag bg-emerald-100 text-emerald-700">新增</span>',
+        removed:  '<span class="result-tag bg-rose-100 text-rose-700">删除</span>',
+        modified: '<span class="result-tag bg-amber-100 text-amber-700">修改</span>'
+    }[d.type] || d.type;
+
+    const confBadge = {
+        high:   '<span class="result-tag bg-rose-100 text-rose-700">高</span>',
+        medium: '<span class="result-tag bg-amber-100 text-amber-700">中</span>',
+        low:    '<span class="result-tag bg-slate-100 text-slate-500">低</span>'
+    }[d.confidence] || '';
+
+    const old = d.old || {};
+    const nev = d.new || {};
+
+    let oldHtml, newHtml;
+    if (d.entity_type === 'dimension') {
+        oldHtml = old.value ? '<span class="font-mono text-xs">' + esc(old.value) + '</span>' +
+            (old.nominal != null ? '<br><span class="text-xs text-slate-400">Nom:' + old.nominal + ' Tol:' + (old.lower != null ? old.lower : '-') + '/' + (old.upper != null ? old.upper : '-') + '</span>' : '') +
+            (old.view ? '<br><span class="text-xs text-slate-400">&#x1F4D0; ' + esc(old.view) + '</span>' : '') +
+            (old.dim_no ? '<br><span class="text-xs text-slate-400">No.' + esc(old.dim_no) + '</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+        newHtml = nev.value ? '<span class="font-mono text-xs font-semibold">' + esc(nev.value) + '</span>' +
+            (nev.nominal != null ? '<br><span class="text-xs text-slate-500">Nom:' + nev.nominal + ' Tol:' + (nev.lower != null ? nev.lower : '-') + '/' + (nev.upper != null ? nev.upper : '-') + '</span>' : '') +
+            (nev.view ? '<br><span class="text-xs text-slate-500">&#x1F4D0; ' + esc(nev.view) + '</span>' : '') +
+            (nev.dim_no ? '<br><span class="text-xs text-slate-500">No.' + esc(nev.dim_no) + '</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+    } else if (d.entity_type === 'gdt') {
+        oldHtml = old.tolerance ? '<span class="font-mono text-xs">Tol:' + esc(old.tolerance) + ' Datums:' + esc(old.datums || '') + '</span>' + (old.view ? '<br><span class="text-xs text-slate-400">&#x1F4D0; ' + esc(old.view) + '</span>' : '') : '<span class="text-slate-300">—</span>';
+        newHtml = nev.tolerance ? '<span class="font-mono text-xs font-semibold">Tol:' + esc(nev.tolerance) + ' Datums:' + esc(nev.datums || '') + '</span>' + (nev.view ? '<br><span class="text-xs text-slate-500">&#x1F4D0; ' + esc(nev.view) + '</span>' : '') : '<span class="text-slate-300">—</span>';
+    } else if (d.entity_type === 'drawing_info') {
+        oldHtml = d.old_value ? '<span class="text-xs">' + esc(d.old_value) + '</span>' : '<span class="text-slate-300">—</span>';
+        newHtml = d.new_value ? '<span class="text-xs font-semibold">' + esc(d.new_value) + '</span>' : '<span class="text-slate-300">—</span>';
+    } else if (d.entity_type === 'deviation_override') {
+        // old/new 的结构: {dim_ref, original_spec, deviated_spec}
+        // 或 details 中有 deviation_override_added（关联到主尺寸的情况）
+        const det = d.details || {};
+        if (det.deviation_override_added) {
+            oldHtml = det.original_spec
+                ? '<span class="font-mono text-xs">' + esc(det.original_spec) + '</span>'
+                    + '<br><span class="text-xs text-slate-400">DIM ' + esc(det.dim_no || '') + '</span>'
+                : '<span class="text-slate-300">—</span>';
+            newHtml = '<span class="font-mono text-xs font-semibold text-violet-700">'
+                + esc(det.deviation_override_added) + '</span>'
+                + '<br><span class="text-xs text-slate-400">偏差后规格</span>';
+        } else {
+            const ent = (d.type === 'removed' ? old : nev);
+            oldHtml = d.type !== 'added' && old.original_spec
+                ? '<span class="font-mono text-xs">' + esc(old.original_spec) + '</span>'
+                    + '<br><span class="text-xs text-slate-400">DIM ' + esc(old.dim_ref || '') + '</span>'
+                : '<span class="text-slate-300">—</span>';
+            newHtml = d.type !== 'removed' && nev.deviated_spec
+                ? '<span class="font-mono text-xs font-semibold text-violet-700">'
+                    + esc(nev.deviated_spec) + '</span>'
+                    + '<br><span class="text-xs text-slate-400">DIM ' + esc(nev.dim_ref || '') + '</span>'
+                : '<span class="text-slate-300">—</span>';
+        }
+    } else if (d.entity_type === 'surface_roughness') {
+        const det = d.details || {};
+        oldHtml = det.change
+            ? '<span class="font-mono text-xs">' + esc(det.change.split(' → ')[0] || '') + '</span>'
+                + (det.dim_no ? '<br><span class="text-xs text-slate-400">DIM #' + esc(det.dim_no) + '</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+        newHtml = det.change
+            ? '<span class="font-mono text-xs font-semibold">' + esc(det.change.split(' → ')[1] || '') + '</span>'
+                + (det.revision ? '<br><span class="text-xs text-violet-500">修订确认</span>' : '')
+            : '<span class="text-slate-300">—</span>';
+    } else {
+        oldHtml = old.value || old.content || (old.part_number ? '零件:' + old.part_number : '') || '<span class="text-slate-300">—</span>';
+        newHtml = nev.value || nev.content || (nev.part_number ? '零件:' + nev.part_number : '') || '<span class="text-slate-300">—</span>';
+    }
+
+    return '<tr class="diff-row ' + rowBg + '">' +
+        '<td class="px-4 py-3 text-slate-400 font-mono text-xs">' + (i + 1) + '</td>' +
+        '<td class="px-4 py-3">' + typeBadge + '</td>' +
+        '<td class="px-4 py-3">' + confBadge + '</td>' +
+        '<td class="px-4 py-3 max-w-xs break-all leading-relaxed">' + oldHtml + '</td>' +
+        '<td class="px-4 py-3 max-w-xs break-all leading-relaxed">' + newHtml + '</td>' +
+        '<td class="px-4 py-3 text-xs text-slate-500 max-w-xs">' + esc(d.reason || '') + '</td>' +
+    '</tr>';
+}
+
+function toggleGroup(header) {
+    const body = header.nextElementSibling;
+    const icon = header.querySelector('i.fa-chevron-down');
+    body.classList.toggle('collapsed');
+    icon.style.transform = body.classList.contains('collapsed') ? 'rotate(-90deg)' : '';
+}
+
+// ══════════════════════════════════════════════
+// 导出 PPAP（仅提取检验报告表 sheet，不添加额外内容）
+// ══════════════════════════════════════════════
+async function exportSmartCSV() {
+    if (!compareResultPaths.a && !compareResultPaths.b) { toast('暂无比对数据', 'warn'); return; }
+    const pathA = compareResultPaths.a || compareResultPaths.b;
+    const pathB = compareResultPaths.b || compareResultPaths.a;
+    const cavities = parseInt(document.getElementById('cavities-input')?.value || '4', 10) || 4;
+    try {
+        toast('正在生成完整报告…', 'info');
+        const res = await fetch('/api/compare/smart_csv', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path_a: pathA, path_b: pathB, cavities }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || res.statusText);
+        }
+        const blob = await res.blob();
+        const filename = 'PPAP_完整_' + dateStr() + '.xlsx';
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast('完整报告已下载', 'success');
+    } catch(e) { toast('导出失败：' + e.message, 'error'); }
+}
+
+/**
+ * 从识别结果 xlsx 中提取"📋 检验报告表"sheet，
+ * 原样另存为新 xlsx 文件并触发下载，不添加任何额外内容。
+ */
+async function exportPpapSheetOnly(xlsxPath, downloadName) {
+    // 1. 从后端取原始识别结果 xlsx（二进制）
+    const res = await fetch('/api/annotated?path=' + encodeURIComponent(xlsxPath));
+    if (!res.ok) throw new Error('无法读取识别结果文件');
+    const arrayBuf = await res.arrayBuffer();
+
+    // 2. 用 SheetJS 解析，找到检验报告表 sheet
+    const wb = XLSX.read(arrayBuf, { type: 'array' });
+    const PPAP_SHEET = '📋 检验报告表';
+    if (!wb.SheetNames.includes(PPAP_SHEET)) {
+        throw new Error(`识别结果中未找到"${PPAP_SHEET}"工作表`);
+    }
+
+    // 3. 新建只含该 sheet 的工作簿，原样写入（保留数值/格式）
+    const newWb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(newWb, wb.Sheets[PPAP_SHEET], PPAP_SHEET);
+
+    // 4. 生成并下载
+    const out = XLSX.write(newWb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = downloadName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('PPAP 报告已下载', 'success');
+}
+
+// ══════════════════════════════════════════════
+// 工具
+// ══════════════════════════════════════════════
+function fmtSize(bytes) {
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/1024/1024).toFixed(2) + ' MB';
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function dateStr() { return new Date().toISOString().slice(0,16).replace('T','_').replace(':',''); }
+function escapeHtml(text) {
+    if (!text) return '';
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+}
+var esc = escapeHtml;
+
+// ══════════════════════════════════════════════
+// 历史记录抽屉
+// ══════════════════════════════════════════════
+function openHistory() {
+    document.getElementById('history-backdrop').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() =>
+        document.getElementById('history-drawer').classList.remove('translate-x-full'));
+    loadHistory();
+}
+
+function closeHistory() {
+    document.getElementById('history-drawer').classList.add('translate-x-full');
+    document.getElementById('history-backdrop').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+async function loadHistory() {
+    const list = document.getElementById('history-list');
+    list.innerHTML = '<div class="flex items-center justify-center h-24 text-slate-400 text-sm"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i>加载中…</div>';
+    try {
+        const data = await fetch('/api/history').then(r => r.json());
+        const records = data.records || [];
+        if (!records.length) {
+            list.innerHTML = '<div class="flex flex-col items-center justify-center h-32 text-slate-400 gap-3"><i class="fa-solid fa-box-open text-2xl"></i><p class="text-sm">暂无历史记录</p></div>';
+            return;
+        }
+        list.innerHTML = records.map(rec => {
+            const recJson = esc(JSON.stringify(rec));
+            return `<div class="group bg-slate-50 hover:bg-primary-50 rounded-xl p-4 border border-transparent hover:border-primary-100 transition-all">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-9 h-9 rounded-lg bg-white border border-slate-200 group-hover:border-primary-200 flex items-center justify-center shrink-0 transition-colors">
+                            <i class="fa-solid fa-file-excel text-emerald-500 text-sm"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="text-sm font-medium text-slate-800 truncate">${esc(rec.name)}</p>
+                            <p class="text-xs text-slate-400 mt-0.5">${esc(rec.mtime)}&nbsp;&middot;&nbsp;${fmtSize(rec.size)}</p>
+                        </div>
+                    </div>
+                    <div class="flex gap-1.5 shrink-0">
+                        <button title="查看识别结果"
+                            onclick="viewHistory(${recJson})"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"><i class="fa-solid fa-eye text-[10px] mr-0.5"></i>查看</button>
+                        <button title="下载报告"
+                            onclick="downloadHistory(${recJson})"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-500 text-white hover:bg-slate-600 transition-colors"><i class="fa-solid fa-download text-[10px]"></i></button>
+                        <button title="载入为图纸 A"
+                            onclick="useHistoryAs(${recJson},'a')"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-primary-600 text-white hover:bg-primary-700 transition-colors">A</button>
+                        <button title="载入为图纸 B"
+                            onclick="useHistoryAs(${recJson},'b')"
+                            class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors">B</button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch(e) {
+        list.innerHTML = `<div class="flex flex-col items-center justify-center h-32 text-rose-400 gap-3"><i class="fa-solid fa-triangle-exclamation text-2xl"></i><p class="text-sm">加载失败：${esc(e.message)}</p></div>`;
+    }
+}
+
+// 查看历史识别结果：切换到单图模式，展示结果面板
+function viewHistory(rec) {
+    closeHistory();
+    switchMode('single');
+
+    // 设置文件信息（模拟已上传状态）
+    singleFile = { name: rec.name, size: rec.size };
+    singleResultPath = rec.path;
+
+    // 更新上传区 UI 为已选中状态
+    document.getElementById('zone-single').classList.add('filled');
+    document.getElementById('placeholder-single').classList.add('hidden');
+    document.getElementById('info-single').classList.remove('hidden');
+    document.getElementById('remove-single').classList.remove('hidden');
+    document.getElementById('single-badge').classList.remove('hidden');
+    document.getElementById('single-name').textContent = rec.name;
+    document.getElementById('single-size').textContent = fmtSize(rec.size);
+    document.getElementById('btn-single').disabled = true;
+
+    // 展示结果面板
+    document.getElementById('single-progress').classList.add('hidden');
+    document.getElementById('single-result').classList.remove('hidden');
+    document.getElementById('single-result-name').textContent = rec.name;
+    document.getElementById('sr-views').textContent = '—';
+    document.getElementById('sr-elements').textContent = '—';
+    document.getElementById('sr-path').textContent = rec.path;
+
+    // 尝试加载标注图（如果存在同目录下的标注PNG）
+    const dir = rec.path.replace(/[/\\][^/\\]+$/, '');
+    const stem = rec.name.replace(/_\d{8}_\d{6}$/, '');
+    avPages = [];
+    avCurrent = 0;
+    // 检查标注图是否存在
+    fetch('/api/annotated?path=' + encodeURIComponent(dir + '/' + rec.name.replace(/\.xlsx$/i, '') + '_标注.png'))
+        .then(r => { if (r.ok) { avPages = [dir + '/' + rec.name.replace(/\.xlsx$/i, '') + '_标注.png']; avShow(); } })
+        .catch(() => {});
+
+    toast('已加载历史记录：' + rec.name, 'success');
+}
+
+// 直接下载历史记录的 Excel 文件
+function downloadHistory(rec) {
+    const a = document.createElement('a');
+    a.href = '/api/download?path=' + encodeURIComponent(rec.path);
+    a.download = rec.name.replace(/^.*[\/\\]/, '') || 'result.xlsx';
+    a.click();
+    toast('开始下载…', 'info');
+}
+
+function useHistoryAs(rec, side) {
+    // compareFiles[side] 需要有 name/size 供 checkCompareReady 判断就绪
+    compareFiles[side] = { name: rec.name, size: rec.size };
+    // compareResultPaths[side] 直接设为已有 xlsx 路径，跳过重新识别
+    compareResultPaths[side] = rec.path;
+    switchMode('compare');
+    setCompareFileUI(side, { name: rec.name, size: rec.size });
+    checkCompareReady();
+    closeHistory();
+    toast(`已载入"${rec.name}" → 图纸 ${side.toUpperCase()}`, 'success');
+}
+</script>
+</body>
+</html>

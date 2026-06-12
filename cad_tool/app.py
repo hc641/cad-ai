@@ -13,6 +13,7 @@ import openpyxl
 
 from cad_vision_recognizer import process_with_vision
 from cad_smart_diff import SmartDiffEngine
+from cad_ppap_export import _build as ppap_build
 
 app = Flask(__name__, template_folder='templates')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
@@ -50,9 +51,10 @@ def _run_recognition(tid: str, pdf_path: str, out_dir: str):
             pdf_path,
             output_dir=out_dir,
             model="qwen-vl-max",
-            dpi=130,
+            dpi=150,
             max_tiles=60,
             mock=os.environ.get("MOCK_VISION", "0") == "1",
+            annotate=True,
         )
         _update_task(tid, status="done", progress=100, result={
             "success": True,
@@ -60,6 +62,7 @@ def _run_recognition(tid: str, pdf_path: str, out_dir: str):
             "pdf": pdf_path,
             "views": result.get("views", []),
             "elements": result.get("elements", 0),
+            "annotated": result.get("annotated", []),
         })
     except Exception as exc:
         _update_task(tid, status="error", error=str(exc))
@@ -112,9 +115,10 @@ def api_upload():
             str(pdf_path),
             output_dir=str(out_dir),
             model="qwen-vl-max",
-            dpi=130,
+            dpi=150,
             max_tiles=60,
             mock=os.environ.get("MOCK_VISION", "0") == "1",
+            annotate=True,
         )
         return jsonify({
             "success": True,
@@ -122,6 +126,7 @@ def api_upload():
             "pdf": str(pdf_path),
             "views": result.get("views", []),
             "elements": result.get("elements", 0),
+            "annotated": result.get("annotated", []),
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -164,6 +169,22 @@ def api_download():
         download_name=file_path.name,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
+
+
+@app.route('/api/annotated', methods=['GET'])
+def api_annotated():
+    """返回标注 PNG 图（识别结果可视化）。"""
+    path = request.args.get('path', '').strip()
+    if not path:
+        return jsonify({"error": "缺少 path 参数"}), 400
+    file_path = Path(path).resolve()
+    try:
+        file_path.relative_to(OUTPUT_DIR.resolve())
+    except ValueError:
+        abort(403)
+    if not file_path.exists():
+        return jsonify({"error": "文件不存在"}), 404
+    return send_file(str(file_path), mimetype='image/png')
 
 
 # ═════════════════════════════════════════════
@@ -399,10 +420,12 @@ def api_smart_compare():
 
 @app.route('/api/compare/smart_csv', methods=['POST'])
 def api_smart_compare_csv():
-    """智能比对 CSV 导出"""
+    """智能比对导出 ——  以 PPAP 标准格式输出 xlsx（同时保留差异数据 sheet）。"""
+    import shutil
     data = request.get_json(force=True)
     path_a = (data.get("path_a") or "").strip()
     path_b = (data.get("path_b") or "").strip()
+    cavities = int(data.get("cavities") or 4)
 
     if not path_a or not path_b:
         return jsonify({"error": "缺少 path_a 或 path_b"}), 400
@@ -416,11 +439,61 @@ def api_smart_compare_csv():
             return jsonify({"error": "路径非法"}), 403
 
     try:
-        engine = SmartDiffEngine(path_a, path_b)
-        result = engine.compare_all()
-        csv_content = engine.to_csv(result)
-        # 返回 CSV 文本内容，前端可自行保存
-        return jsonify({"success": True, "csv": csv_content})
+        src = Path(path_a)
+        is_single = (Path(path_a).resolve() == Path(path_b).resolve())
+
+        if is_single:
+            # ── 单图模式：直接生成纯 PPAP，不跑差异引擎 ──
+            out_name = src.stem + "_PPAP.xlsx"
+            out_path = src.parent / out_name
+            shutil.copy2(str(src), str(out_path))
+            wb = openpyxl.load_workbook(str(out_path))
+        else:
+            # ── 双图比对模式：生成差异数据 + PPAP 主表 ──
+            engine = SmartDiffEngine(path_a, path_b)
+            result = engine.compare_all()
+
+            out_name = src.stem + "_PPAP_diff.xlsx"
+            out_path = src.parent / out_name
+            shutil.copy2(str(src), str(out_path))
+            wb = openpyxl.load_workbook(str(out_path))
+
+            # 将差异写入"变更差异"sheet
+            diff_sn = "📊 变更差异"
+            if diff_sn in wb.sheetnames:
+                del wb[diff_sn]
+            ws_diff = wb.create_sheet(diff_sn)
+            headers = ["#", "类型", "置信度", "实体", "分类", "旧值", "新值", "原因"]
+            for ci, h in enumerate(headers, 1):
+                ws_diff.cell(1, ci, h)
+            for i, d in enumerate(result.get("diffs", []), 1):
+                old_obj = d.get("old") or {}
+                new_obj = d.get("new") or {}
+                old_val = (old_obj.get("value") or old_obj.get("content")
+                           or d.get("old_value") or "")
+                new_val = (new_obj.get("value") or new_obj.get("content")
+                           or d.get("new_value") or "")
+                ws_diff.append([
+                    i,
+                    d.get("type", ""),
+                    d.get("confidence", ""),
+                    d.get("entity_type", ""),
+                    d.get("category", ""),
+                    str(old_val),
+                    str(new_val),
+                    d.get("reason", ""),
+                ])
+
+        # PPAP 主表（单图和比对模式都生成）
+        ppap_build(wb, cavities)
+        wb.save(str(out_path))
+
+        return send_file(
+            str(out_path),
+            as_attachment=True,
+            download_name=out_name,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

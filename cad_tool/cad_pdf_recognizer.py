@@ -1,3 +1,4 @@
+from collections import Counter
 """
 CAD图纸PDF识别系统 - 第一阶段
 功能：PDF解析 → 结构化信息提取 → Excel报表输出
@@ -112,7 +113,7 @@ class CADInfoExtractor:
         if fname_num and fname_num.group(1) in eight:
             tb["图号 (DWG NO.)"] = fname_num.group(1)
         elif eight:
-            tb["图号 (DWG NO.)"] = max(set(eight), key=eight.count)
+            tb["图号 (DWG NO.)"] = Counter(eight).most_common(1)[0][0]
         m = re.search(r"(TAXI CONN[^\n]*|[A-Z][A-Z0-9 .]*CONN[A-Z0-9 .]*HEADER)", self.t)
         tb["图名 (DWG NAME)"] = m.group(1).strip() if m else ""
         m = re.search(r"\b(\d{1,2}:\d{1,2})\b", self.t)
@@ -289,12 +290,12 @@ class CADInfoExtractor:
     def _deviations(self):
         """解析两种偏差表格式：
         格式1 (旧)：DEVIATION LIST  —  "39# 6.4+/-0.02  6.3+/-0.02"
-        格式2 (新)：DEVIATION TABLE —  "39 6.30+0.02/-0.04"
-                    表头含 "DIM NO." / "DEVIATION ACCEPTABLE"
+        格式2 (新)：DEVIATION TABLE —  "DIM NO. DEVIATION ACCEPTABLE"
+                    行格式 "39 6.30+0.02/-0.04" 或 "85 0.15 A B C" 或 "10 Rz15-30"
         """
         seen = set()
 
-        # ── 格式1: DEVIATION LIST ──────────────────────────
+        # ── 格式1: DEVIATION LIST ──────────────────────────────────────
         idx1 = self.t.find("DEVIATION LIST")
         if idx1 >= 0:
             block = self.t[idx1:idx1 + 3000]
@@ -311,13 +312,7 @@ class CADInfoExtractor:
                     "偏差后": m.group(3).replace("+/-", "±").strip(),
                 })
 
-        # ── 格式2: DEVIATION TABLE (R03+ 样式) ────────────
-        # 典型文本：
-        #   DIM NO. DEVIATION ACCEPTABLE
-        #   FOR TOOL NO. TN35957399-PM-A-C001
-        #   39 6.30+0.02/-0.04
-        #   40 7.30+0.10/-0.30
-        #   WARPAGE ALLOWED -0.2MM
+        # ── 格式2: DEVIATION TABLE (R03+ 样式) ────────────────────────
         for marker in ("DEVIATION TABLE", "DIM NO. DEVIATION", "DIM NO."):
             idx2 = self.t.find(marker)
             if idx2 >= 0:
@@ -327,29 +322,33 @@ class CADInfoExtractor:
 
         if idx2 >= 0:
             block2 = self.t[idx2:idx2 + 4000]
-            # 匹配：数字编号 + 公差规格，支持多种写法
-            #   "39 6.30+0.02/-0.04"
-            #   "85 0.15 A B C"
-            #   "74 0.50 D C"
-            #   "10 Rz15-30"
+            # dim_no 必须是纯整数（排除 "5.5"、"453021" 等非编号数字）
+            # 偏差规格：贪婪匹配到行尾（含基准字母、Rz、ALLOWED WARPAGE 等）
             pat2 = re.compile(
-                r"^[ \t]*(\d+)[ \t]+"           # dim no
-                r"([A-Za-z0-9.+\-/±]+(?:[ \t]+[A-Z]{1,3})*)",  # spec (含基准字母)
+                r"^[ \t]*(\d{1,4})[ \t]+"            # dim_no: 1~4位整数
+                r"(.+?)[ \t]*$",                         # spec: 贪婪到行尾
                 re.MULTILINE,
             )
             for m in pat2.finditer(block2):
                 dim_no = m.group(1)
                 spec = m.group(2).strip().replace("+/-", "±")
-                # 排除非尺寸行：纯大写单词（如 FOR、TOOL、WARPAGE）
-                if re.fullmatch(r"[A-Z]+", spec):
+                # 排除纯大写关键词行（FOR、TOOL、WARPAGE、NO、DIM 等）
+                if re.fullmatch(r"[A-Z ]+", spec):
                     continue
+                # 排除表头行（含 DEVIATION、ACCEPTABLE、TOOL）
+                if any(kw in spec.upper() for kw in
+                       ("DEVIATION", "ACCEPTABLE", "TOOL NO", "WARPAGE ALLOWED",
+                        "ALLOWED WARPAGE")):
+                    # 但保留 "0.35 ALLOWED WARPAGE -0.20" 这种带数值的行
+                    if not re.search(r"\d", spec[:6]):
+                        continue
                 key = f"TABLE:{dim_no}:{spec}"
                 if key in seen:
                     continue
                 seen.add(key)
                 self.r["偏差清单"].append({
                     "尺寸编号": dim_no + "#",
-                    "原规格": "",          # 格式2不直接提供原规格，留空
+                    "原规格": "",
                     "偏差后": spec,
                 })
 
@@ -529,14 +528,83 @@ class CADInfoExtractor:
     def _tolerance_chart(self):
         idx = self.t.find("GENERAL TOLERANCE")
         if idx < 0:
+            idx = self.t.find("TOLERANCE UNLESS")
+        if idx < 0:
+            idx = self.t.find("DIMENSIONAL RANGE")
+        if idx < 0:
             return
         block = self.t[idx:idx + 800]
-        tols = re.findall(r"\+/-([\d.]+)", block)
-        ranges = re.findall(r"(\d+)\s*TO\s*(\d+)", block)
+
+        # ── 方案一：同一行内 "+/-0.15" 或 "±0.15" 写法（紧凑表格） ──
+        tols = re.findall(r"(?:\+/-|±)\s*([\d.]+)", block)
+        ranges = re.findall(r"(?:FROM\s+)?[>\s]*(\d+)\s*(?:TO|–|-)\s*(\d+)", block)
+
+        # 同时抓取角度公差（±2° 格式，同行）
+        ang_m = re.search(r"ANGULAR\s+TOLERANCE\s*[±+/-]+\s*([\d.]+)\s*°", block, re.IGNORECASE)
+        angular_tol = float(ang_m.group(1)) if ang_m else None
+
+        # ── 方案二：PyMuPDF 逐行提取，FROM/TO 数字与公差值各自成块 ──
+        # 典型结构（每个数字单独一行）：
+        #   FROM\nTO\n...ANGULAR TOLERANCE\nE1\n
+        #   0\n20\n20\n30\n30\n70\n...\n300\n400        ← 9对 FROM/TO（18个数）
+        #   0.15\n0.2\n0.3\n...\n1\n1.2                  ← 9个线性公差
+        #   2                                            ← 角度公差
+        if not ranges or not tols:
+            lines = block.splitlines()
+            # 找到 "E1" 或 CHART 标记后的数字序列起点
+            start = 0
+            for i, ln in enumerate(lines):
+                if re.fullmatch(r"E\d+", ln.strip()):
+                    start = i + 1
+                    break
+            else:
+                # 没有 CHART 标记，从 "TO" 之后开始找数字
+                for i, ln in enumerate(lines):
+                    if ln.strip() == "TO":
+                        start = i + 1
+                        break
+
+            nums = []
+            for ln in lines[start:start + 40]:
+                ln = ln.strip()
+                if re.fullmatch(r"\d+(?:\.\d+)?", ln):
+                    nums.append(ln)
+                elif nums:
+                    # 遇到非数字行（如 "A", "SECTION A-A"）说明数字块结束
+                    break
+
+            int_nums = [n for n in nums if "." not in n]
+            if len(int_nums) >= 18:
+                from_to = int_nums[:18]
+                ranges = [(from_to[i], from_to[i + 1]) for i in range(0, 18, 2)]
+                tail = nums[18:]
+            else:
+                tail = nums
+
+            # tail 形如 [0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1, 1.2, 2]
+            #   前 N 个对应 ranges 数量，最后一个为角度公差
+            if ranges and len(tail) >= len(ranges):
+                n_lin = len(ranges)
+                tols = tail[:n_lin]
+                if len(tail) > n_lin and angular_tol is None:
+                    try:
+                        angular_tol = float(tail[n_lin])
+                    except ValueError:
+                        pass
+            elif tail:
+                tols = tail
+
         for i, (lo, hi) in enumerate(ranges):
             self.r["一般公差表"].append({
                 "尺寸范围(mm)": f"{lo} – {hi}",
                 "公差(±mm)": tols[i] if i < len(tols) else "",
+            })
+
+        # 角度公差单独存一条，供 Vision 层查用
+        if angular_tol is not None:
+            self.r["一般公差表"].append({
+                "尺寸范围(mm)": "角度",
+                "公差(±mm)": str(angular_tol),
             })
 
 

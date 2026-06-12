@@ -59,7 +59,7 @@ GENERAL_TOL_VALUE_PATTERNS = (
     re.compile(r"ANGULAR\s+TOLERANCE", re.IGNORECASE),
     re.compile(r"GENERAL\s+TOLERANCE", re.IGNORECASE),
     re.compile(r"^\s*\d+(\.\d+)?\s*/\s*\d+(\.\d+)?\s*$"),  # 19.8/20.2 形式的上下限
-    re.compile(r"^\s*[±\+\-]\s*\d"),                # ±0.15  +0.1  -0.2 等纯浮点公差值
+    re.compile(r"^\s*±\s*\d"),                       # ±0.15
 )
 
 # ── 修订历史 "WAS xxx" 提取 ───────────────────────────
@@ -339,12 +339,9 @@ def normalize_general_tol(text):
 
 
 def is_general_tol_entry(view, value):
-    """判断某条目是否为标题栏标准公差范围表条目（问题1豁免对象）。
-    放宽条件：view 为 TITLE_BLOCK *或* 空字符串（旧版 PDF 识别时 view 可能未填）
-    且 value 符合通用公差格式。
-    """
+    """判断某条目是否为标题栏标准公差范围表条目（问题1豁免对象）。"""
     v = normalize_text(view)
-    if v not in ("TITLE_BLOCK", ""):
+    if v != "TITLE_BLOCK":
         return False
     val = str(value or "")
     return any(p.search(val) for p in GENERAL_TOL_VALUE_PATTERNS)
@@ -371,22 +368,60 @@ def normalize_dim_no(s):
     return m.group(1) if m else t
 
 
-# ── 问题3：修订历史 WAS 解析 ───────────────────────────────
+# ── Fix4：气泡序号伪尺寸识别 ───────────────────────────────
+
+def _is_bubble_sequence_artifact(dim) -> bool:
+    """判断一个尺寸实体是否实际是被误读的"气泡序号"。
+    特征：drawing 值是纯小整数(1~30)，等于自身 dim_no，且无任何公差。
+    例: dim_no=94, drawing='94', 无公差 → 气泡序号，不是真实尺寸。
+    """
+    if dim.lower is not None or dim.upper is not None:
+        return False
+    raw = str(dim.drawing_raw or "").strip()
+    # 去掉可能的倍数前缀
+    raw = re.sub(r"^\d+\s*[X×]\s*", "", raw).strip()
+    if not re.fullmatch(r"\d{1,2}", raw):
+        return False
+    try:
+        v = int(raw)
+    except ValueError:
+        return False
+    if not (1 <= v <= 999):
+        return False
+    return dim.dim_no and normalize_dim_no(dim.dim_no) == raw
+
+
+# ── 问题3/Fix5：修订历史 WAS 解析（支持 FOR #N、跨行） ─────────
 
 def parse_revision_was(text):
     """从修订说明文本中提取 (dim_no, was_value) 候选。
-    例: 'REVISED DIM #33 WAS Rz15-20' → [('33', 'Rz15-20')]
-        'WAS 0.30' → [('', '0.30')]
-    返回 [(dim_no_str_or_empty, was_value_str), ...]
+    支持：
+      'REVISED DIM #33 WAS Rz15-20'              → [('33','Rz15-20')]
+      '1.5+0.10/-0.10 WAS 2.75+0.08/-0.12 FOR 70#'→ [('70','2.75+0.08/-0.12')]
+      'WAS 2.75+0.08/-0.12 FOR\\n70#'            → [('70','2.75+0.08/-0.12')]
+      'WAS 0.30'                                  → [('','0.30')]
     """
     if not text:
         return []
+    flat = re.sub(r"[\r\n]+", " ", str(text))
     out = []
-    for m in REVISION_WAS_PATTERN.finditer(str(text)):
-        dim_no = normalize_dim_no(m.group(1)) if m.group(1) else ""
-        was_val = (m.group(2) or "").strip()
-        if was_val:
-            out.append((dim_no, was_val))
+    # 模式A：DIM #N WAS value
+    for m in re.finditer(
+            r"DIM\s*#?\s*(\d+)\s+WAS\s+([A-Za-z0-9.+\-/±]+)", flat, re.IGNORECASE):
+        out.append((normalize_dim_no(m.group(1)), m.group(2).strip()))
+    # 模式B：WAS value ... FOR N#  （value 可含 +x/-y，可跨原换行）
+    for m in re.finditer(
+            r"WAS\s+([0-9][A-Za-z0-9.+\-/±\s]*?)\s+FOR\s+#?(\d+)\s*#?",
+            flat, re.IGNORECASE):
+        out.append((normalize_dim_no(m.group(2)),
+                    re.sub(r"\s+", "", m.group(1))))
+    # 模式C：裸 WAS value（仅当前两种都没命中，避免重复）
+    if not out:
+        for m in REVISION_WAS_PATTERN.finditer(flat):
+            dim_no = normalize_dim_no(m.group(1)) if m.group(1) else ""
+            was_val = (m.group(2) or "").strip()
+            if was_val:
+                out.append((dim_no, was_val))
     return out
 
 
@@ -447,7 +482,16 @@ class GDT:
 
     def __init__(self, tolerance_val="", datums=None, gdt_type="",
                  view="", raw="", row_data=None):
-        self.tolerance_val = normalize_text(tolerance_val)
+        # Fix2: 公差值做浮点归一化，消除 0.1 / 0.10 / 0.100 等格式差异
+        raw_tol = normalize_text(tolerance_val)
+        m = re.search(r"-?\d+(?:\.\d+)?", raw_tol)
+        if m:
+            try:
+                self.tolerance_val = str(round(float(m.group(0)), 4))
+            except (ValueError, TypeError):
+                self.tolerance_val = raw_tol
+        else:
+            self.tolerance_val = raw_tol
         self.datums = frozenset(d.strip() for d in (datums or []) if d.strip())
         self.gdt_type = normalize_text(gdt_type)
         self.view = normalize_text(view)
@@ -1434,14 +1478,61 @@ class SmartDiffEngine:
                            "(not a formal dimension change)",
                 ))
 
+        # ── Fix1: 偏差表回显启发式检测 ──────────────────
+        # 偏差表会把已有尺寸连同"偏差后公差"再列一遍。这类回显条目的特征是：
+        # 带公差、且其标称值在本版另一条尺寸上已出现。把它们从 added,high,dimension
+        # 改判为 deviation_override，并计入 Deviation Overrides。
+        from collections import Counter as _Counter
+        val_count_b = _Counter(d.normalized_value for d in dims_b if d.normalized_value)
+        echo_consumed = set()
+        for e in added_dims:
+            if id(e) in consumed_added:
+                continue
+            has_tol = (e.lower is not None or e.upper is not None)
+            if has_tol and e.normalized_value and val_count_b[e.normalized_value] >= 2:
+                echo_consumed.add(id(e))
+                deviation_overrides += 1
+                changes.append(ChangeResult(
+                    "added", "deviation_override", "medium", new_entity=e,
+                    details={"region": "deviation_table_echo",
+                             "value": e.drawing_raw, "dim_no": e.dim_no,
+                             "tolerance": f"({e.lower},{e.upper})"},
+                    reason="Re-listed existing dimension with deviation tolerance "
+                           "(deviation table echo)"))
+        consumed_added |= echo_consumed
+
         # ── 输出残余主尺寸增删（扣除被修订/偏差消费的项） ──
         for e in removed_dims:
             if id(e) in consumed_removed:
+                continue
+            # Fix3: TITLE_BLOCK 区域带编号的条目极可能是标题栏内容被误标气泡号，
+            # 不以 high 报删除
+            if e.view == "TITLE_BLOCK" and e.dim_no:
+                changes.append(ChangeResult(
+                    "removed", "dimension", "low", old_entity=e,
+                    details={"region": "title_block", "value": e.drawing_raw},
+                    reason="Title block entry carrying a dim_no — likely OCR mis-label"))
                 continue
             changes.append(
                 ChangeClassifier.classify_removed(e, "dimension", is_renumbered))
         for e in added_dims:
             if id(e) in consumed_added:
+                continue
+            # Fix4: 气泡序号被误读成尺寸——value 就是编号本身(纯小整数)且无公差
+            if _is_bubble_sequence_artifact(e):
+                changes.append(ChangeResult(
+                    "added", "dimension", "low", new_entity=e,
+                    details={"artifact": "bubble_number_sequence",
+                             "value": e.drawing_raw, "dim_no": e.dim_no},
+                    reason="Value equals its own bubble number with no tolerance — "
+                           "likely an inspection-bubble index misread as a dimension"))
+                continue
+            # Fix3: 同理处理 TITLE_BLOCK 新增噪声
+            if e.view == "TITLE_BLOCK" and e.dim_no:
+                changes.append(ChangeResult(
+                    "added", "dimension", "low", new_entity=e,
+                    details={"region": "title_block", "value": e.drawing_raw},
+                    reason="Title block entry carrying a dim_no — likely OCR mis-label"))
                 continue
             changes.append(
                 ChangeClassifier.classify_added(e, "dimension", is_renumbered))
@@ -1505,22 +1596,24 @@ class SmartDiffEngine:
                                         new_entity=e, reason="Key characteristic added"))
 
         # ── 图纸信息对比 ──────────────────────────
-        # 黑名单：由识别器自动写入的统计/运行时字段，不属于工程变更，跳过比对
-        DRAWING_INFO_BLACKLIST = {
-            "文件名", "视觉元素总数", "尺寸标注", "自动编号项", "其中基准特征",
-            "NX倍数展开项", "其中尺寸", "其中GD&T", "其中角度", "其中表面粗糙度",
-            "识别视图数", "尺寸视图归属率", "使用模型",
-            # 英文/混合写法兜底
-            "VISION ELEMENTS", "AUTO NUMBERED", "NX EXPANDED",
-        }
+        # 黑名单：纯统计/派生/元数据字段，不代表图纸工程内容变更
+        DRAWING_INFO_BLACKLIST = frozenset({
+            # PDF/文件元数据
+            "文件名", "创建日期", "Creation Date",
+            # 识别器统计指标
+            "尺寸标注", "视觉元素总数", "NX倍数展开项", "尺寸视图归属率",
+            "其中尺寸", "其中GD&T", "其中角度", "其中表面粗糙度",
+            "其中基准特征", "自动编号项", "识别视图数", "使用模型",
+            "偏差表条目(AI)",
+            # 图纸信息 sheet 里的识别器计数行
+            "GDT几何公差",
+            # Fix6: 这些是条目计数，真正的增删已在各自类别单独上报，计数行属冗余噪声
+            "技术要求", "修订历史", "物料清单", "关键特性", "页数", "页面尺寸(pt)",
+        })
         info_a = self.ext_a.extract_info()
         info_b = self.ext_b.extract_info()
         for k in set(info_a) | set(info_b):
-            # 跳过识别器自动统计字段（问题3：drawing_info 黑名单）
             if k in DRAWING_INFO_BLACKLIST:
-                continue
-            # 跳过含识别器标记的节标题行（如"【第二阶段 Vision 识别（百炼）】"）
-            if k.startswith("【") and "识别" in k:
                 continue
             va = info_a.get(k, "")
             vb = info_b.get(k, "")
